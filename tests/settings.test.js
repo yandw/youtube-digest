@@ -3,24 +3,47 @@ const assert = require("node:assert/strict");
 
 const settings = require("../settings.js");
 
-test("DeepSeek defaults use V4 Flash", () => {
+test("custom AI base URL and model are preserved", () => {
   const normalized = settings.normalize({
     provider: "unexpected",
     aiApiKey: "  example-key  ",
-    aiBaseUrl: "https://api.example.com/v1",
-    aiModel: "example-model",
+    aiBaseUrl: "https://api.example.com/v1/",
+    aiModel: "  example-model  ",
     supadataApiKey: "  example-supadata  ",
   });
 
   assert.equal(normalized.provider, "deepseek");
-  assert.equal(normalized.aiBaseUrl, "https://api.deepseek.com");
-  assert.equal(normalized.aiModel, "deepseek-v4-flash");
+  assert.equal(normalized.aiBaseUrl, "https://api.example.com/v1");
+  assert.equal(normalized.aiModel, "example-model");
   assert.equal(normalized.aiApiKey, "example-key");
   assert.equal(normalized.supadataApiKey, "example-supadata");
+  assert.equal(
+    settings.chatCompletionsUrl(normalized.aiBaseUrl),
+    "https://api.example.com/v1/chat/completions",
+  );
+});
+
+test("empty or invalid AI endpoint config falls back to DeepSeek defaults", () => {
+  const empty = settings.normalize({});
+  assert.equal(empty.aiBaseUrl, "https://api.deepseek.com");
+  assert.equal(empty.aiModel, "deepseek-v4-flash");
   assert.equal(
     settings.chatCompletionsUrl(),
     "https://api.deepseek.com/chat/completions",
   );
+
+  const invalid = settings.normalize({
+    aiBaseUrl: "not a url",
+    aiModel: "   ",
+  });
+  assert.equal(invalid.aiBaseUrl, settings.DEFAULTS.aiBaseUrl);
+  assert.equal(invalid.aiModel, settings.DEFAULTS.aiModel);
+
+  assert.equal(settings.isValidAiBaseUrl("https://api.openai.com/v1"), true);
+  assert.equal(settings.isValidAiBaseUrl("http://localhost:11434/v1"), true);
+  assert.equal(settings.isValidAiBaseUrl("http://example.com"), false);
+  assert.equal(settings.isValidAiBaseUrl("ftp://api.deepseek.com"), false);
+  assert.equal(settings.isValidAiBaseUrl(""), false);
 });
 
 test("legacy custom migration clears only the AI key and is idempotent", () => {

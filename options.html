@@ -110,6 +110,31 @@
               >Create a DeepSeek API key</a
             ><span data-i18n="deepseekHelpSuffix">.</span>
           </p>
+
+          <label for="aiBaseUrl" data-i18n="aiBaseUrlLabel">API base URL</label>
+          <input
+            id="aiBaseUrl"
+            name="aiBaseUrl"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="https://api.deepseek.com"
+          />
+          <label for="aiModel" data-i18n="aiModelLabel">Model</label>
+          <input
+            id="aiModel"
+            name="aiModel"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="deepseek-v4-flash"
+          />
+          <p class="help" data-i18n="customEndpointHelp">
+            Leave both fields empty to keep the DeepSeek defaults. A custom
+            endpoint must speak the OpenAI chat-completions API. If its host is
+            not api.deepseek.com, add that host to host_permissions in
+            manifest.json and reload the extension.
+          </p>
           <div class="privacy-note" data-i18n="privacyNote">
             When you use AI features, DeepSeek receives the video transcript
             and relevant video context. Review DeepSeek's terms and pricing

@@ -122,7 +122,7 @@ async function requestAiCompletion({
   resetIdleTimeout();
   try {
     const response = await fetch(
-      YTD_SETTINGS.chatCompletionsUrl(),
+      YTD_SETTINGS.chatCompletionsUrl(settings.aiBaseUrl),
       {
         method: "POST",
         headers: {

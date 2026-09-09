@@ -348,6 +348,10 @@ button.danger {
   font-size: 13px;
 }
 
+#saveStatus.error {
+  color: var(--danger);
+}
+
 .data-card {
   margin-top: 36px;
 }

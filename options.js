@@ -24,6 +24,12 @@ const YTD_OPTIONS = (() => {
         "YouTube Digest uses DeepSeek V4 Flash for overviews, explanations, translation, and note polishing. ",
       deepseekLink: "Create a DeepSeek API key",
       deepseekHelpSuffix: ".",
+      aiBaseUrlLabel: "API base URL",
+      aiModelLabel: "Model",
+      customEndpointHelp:
+        "Leave both fields empty to keep the DeepSeek defaults. A custom endpoint must speak the OpenAI chat-completions API. If its host is not api.deepseek.com, add that host to host_permissions in manifest.json and reload the extension.",
+      invalidBaseUrl:
+        "The API base URL is not a valid https URL (http is allowed only for localhost).",
       privacyNote:
         "When you use AI features, DeepSeek receives the video transcript and relevant video context. Review DeepSeek's terms and pricing before saving.",
       saveSettings: "Save settings",
@@ -57,9 +63,21 @@ const YTD_OPTIONS = (() => {
       migrationWarning:
         "Custom provider settings were removed safely. Your Supadata key was kept, but the AI key was cleared. Enter a DeepSeek API key to continue.",
       saving: "Saving…",
+      verifying: "Saved. Verifying API connections…",
+      savedVerified:
+        "Saved and verified. Reopen YouTube Digest to use these settings.",
+      verifyFailed: ({ detail }) =>
+        `Saved, but the connection check failed: ${detail}`,
+      aiKeyRejected: "the AI API key was rejected",
+      aiNotFound:
+        "the AI endpoint or model was not found (check the base URL and model name)",
+      aiHttpError: ({ status }) => `the AI endpoint returned HTTP ${status}`,
+      aiUnreachable:
+        "the AI endpoint could not be reached (check the base URL and manifest host_permissions)",
+      supadataKeyRejected: "the Supadata API key was rejected",
+      supadataUnreachable: "Supadata could not be reached",
       addSupadataKey: "Add a Supadata API key.",
       addDeepseekKey: "Add a DeepSeek API key.",
-      saved: "Saved. Reopen YouTube Digest to use these settings.",
       saveFailed: "Could not save settings. Please try again.",
       copying: "Copying…",
       promptCopied: "Edited prompt copied.",
@@ -93,6 +111,12 @@ const YTD_OPTIONS = (() => {
         "YouTube Digest 使用 DeepSeek V4 Flash 生成概览、解释内容、翻译字幕和润色笔记。",
       deepseekLink: "创建 DeepSeek API 密钥",
       deepseekHelpSuffix: "。",
+      aiBaseUrlLabel: "API 基础 URL",
+      aiModelLabel: "模型",
+      customEndpointHelp:
+        "两个字段都留空则保持 DeepSeek 默认值。自定义端点必须兼容 OpenAI chat-completions API。如果其域名不是 api.deepseek.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
+      invalidBaseUrl:
+        "API 基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
       privacyNote:
         "使用 AI 功能时，DeepSeek 会收到视频字幕及相关视频上下文。保存前请查看 DeepSeek 的服务条款和价格。",
       saveSettings: "保存设置",
@@ -125,9 +149,19 @@ const YTD_OPTIONS = (() => {
       migrationWarning:
         "已安全移除自定义服务设置。Supadata 密钥已保留，AI 密钥已清除。请输入 DeepSeek API 密钥以继续使用。",
       saving: "正在保存…",
+      verifying: "已保存。正在校验 API 连接…",
+      savedVerified:
+        "已保存，AI 与 Supadata 连接校验通过。请重新打开 YouTube Digest 以使用这些设置。",
+      verifyFailed: ({ detail }) => `已保存，但连接校验未通过：${detail}`,
+      aiKeyRejected: "AI API 密钥被拒绝",
+      aiNotFound: "找不到 AI 端点或模型（请检查基础 URL 和模型名称）",
+      aiHttpError: ({ status }) => `AI 端点返回 HTTP ${status}`,
+      aiUnreachable:
+        "无法连接 AI 端点（请检查基础 URL 和 manifest 的 host_permissions）",
+      supadataKeyRejected: "Supadata API 密钥被拒绝",
+      supadataUnreachable: "无法连接 Supadata",
       addSupadataKey: "请添加 Supadata API 密钥。",
       addDeepseekKey: "请添加 DeepSeek API 密钥。",
-      saved: "已保存。请重新打开 YouTube Digest 以使用这些设置。",
       saveFailed: "无法保存设置，请重试。",
       copying: "正在复制…",
       promptCopied: "已复制编辑后的提示词。",
@@ -330,6 +364,65 @@ const YTD_OPTIONS = (() => {
     await clipboard.writeText(value);
   }
 
+  const VERIFY_TIMEOUT_MS = 15000;
+
+  /**
+   * Minimal chat completion that proves base URL, key, and model all work.
+   * Returns { ok: true } or { ok: false, reason, status? }.
+   */
+  async function checkAiConnection(fetchImpl, { baseUrl, apiKey, model }) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
+    try {
+      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 1,
+          messages: [{ role: "user", content: "ping" }],
+        }),
+        signal: controller.signal,
+      });
+      if (response.ok) return { ok: true };
+      if (response.status === 401 || response.status === 403) {
+        return { ok: false, reason: "aiKeyRejected" };
+      }
+      if (response.status === 404) return { ok: false, reason: "aiNotFound" };
+      return { ok: false, reason: "aiHttpError", status: response.status };
+    } catch (_error) {
+      return { ok: false, reason: "aiUnreachable" };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Key check without spending a transcript credit: the transcript endpoint
+   * answers 401/403 for a bad key and anything else once auth passes.
+   */
+  async function checkSupadataKey(fetchImpl, apiKey) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
+    try {
+      const response = await fetchImpl(
+        "https://api.supadata.ai/v1/transcript?url=not-a-video&text=false&mode=native",
+        { headers: { "x-api-key": apiKey }, signal: controller.signal },
+      );
+      if (response.status === 401 || response.status === 403) {
+        return { ok: false, reason: "supadataKeyRejected" };
+      }
+      return { ok: true };
+    } catch (_error) {
+      return { ok: false, reason: "supadataUnreachable" };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   function getSafeLocalStorage(root) {
     try {
       return root.localStorage;
@@ -349,6 +442,8 @@ const YTD_OPTIONS = (() => {
     );
     const form = doc.getElementById("settingsForm");
     const aiApiKeyInput = doc.getElementById("aiApiKey");
+    const aiBaseUrlInput = doc.getElementById("aiBaseUrl");
+    const aiModelInput = doc.getElementById("aiModel");
     const supadataApiKeyInput = doc.getElementById("supadataApiKey");
     const customizationPrompt = doc.getElementById("customizationPrompt");
     const copyCustomizationPromptBtn = doc.getElementById(
@@ -421,6 +516,8 @@ const YTD_OPTIONS = (() => {
         const settings = migration.settings;
 
         aiApiKeyInput.value = settings.aiApiKey;
+        aiBaseUrlInput.value = settings.aiBaseUrl;
+        aiModelInput.value = settings.aiModel;
         supadataApiKeyInput.value = settings.supadataApiKey;
         if (migration.migrated) {
           await storage.set({ [settingsApi.STORAGE_KEY]: settings });
@@ -442,10 +539,19 @@ const YTD_OPTIONS = (() => {
 
     async function saveSettings(event) {
       event.preventDefault();
+      saveStatus.classList.remove("error");
       setStatus(saveStatus, "saving");
+
+      const baseUrlValue = aiBaseUrlInput.value.trim();
+      if (baseUrlValue && !settingsApi.isValidAiBaseUrl(baseUrlValue)) {
+        setStatus(saveStatus, "invalidBaseUrl");
+        return;
+      }
 
       const settings = settingsApi.normalize({
         aiApiKey: aiApiKeyInput.value,
+        aiBaseUrl: baseUrlValue,
+        aiModel: aiModelInput.value,
         supadataApiKey: supadataApiKeyInput.value,
       });
 
@@ -460,9 +566,37 @@ const YTD_OPTIONS = (() => {
 
       try {
         await storage.set({ [settingsApi.STORAGE_KEY]: settings });
-        setStatus(saveStatus, "saved");
       } catch (_error) {
         setStatus(saveStatus, "saveFailed");
+        return;
+      }
+
+      // Settings are already persisted; now verify both APIs actually work.
+      saveStatus.classList.remove("error");
+      setStatus(saveStatus, "verifying");
+      const [aiResult, supadataResult] = await Promise.all([
+        checkAiConnection(root.fetch.bind(root), {
+          baseUrl: settings.aiBaseUrl,
+          apiKey: settings.aiApiKey,
+          model: settings.aiModel,
+        }),
+        checkSupadataKey(root.fetch.bind(root), settings.supadataApiKey),
+      ]);
+
+      const failures = [aiResult, supadataResult]
+        .filter((result) => !result.ok)
+        .map((result) =>
+          translate(currentLanguage, result.reason, {
+            status: result.status,
+          }),
+        );
+      if (failures.length) {
+        saveStatus.classList.add("error");
+        setStatus(saveStatus, "verifyFailed", {
+          detail: failures.join("; "),
+        });
+      } else {
+        setStatus(saveStatus, "savedVerified");
       }
     }
 
@@ -531,6 +665,8 @@ const YTD_OPTIONS = (() => {
   return {
     COPY,
     LANGUAGE_STORAGE_KEY,
+    checkAiConnection,
+    checkSupadataKey,
     copyPromptValue,
     createPromptDrafts,
     createStorageAdapter,

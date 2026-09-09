@@ -18,6 +18,35 @@ var YTD_SETTINGS = (() => {
     return !!input && input.provider === "custom";
   }
 
+  function isValidAiBaseUrl(value) {
+    if (typeof value !== "string") return false;
+    const trimmed = value.trim();
+    if (!trimmed) return false;
+    try {
+      const url = new URL(trimmed);
+      if (url.protocol === "https:") return true;
+      // Local/self-hosted providers (e.g. Ollama) often serve plain http.
+      return (
+        url.protocol === "http:" &&
+        (url.hostname === "localhost" || url.hostname === "127.0.0.1")
+      );
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function normalizeBaseUrl(value) {
+    return isValidAiBaseUrl(value)
+      ? value.trim().replace(/\/+$/, "")
+      : DEFAULTS.aiBaseUrl;
+  }
+
+  function normalizeModel(value) {
+    return typeof value === "string" && value.trim()
+      ? value.trim()
+      : DEFAULTS.aiModel;
+  }
+
   function normalize(input = {}) {
     return {
       provider: DEFAULTS.provider,
@@ -26,8 +55,12 @@ var YTD_SETTINGS = (() => {
         : typeof input.aiApiKey === "string"
           ? input.aiApiKey.trim()
           : "",
-      aiBaseUrl: DEFAULTS.aiBaseUrl,
-      aiModel: DEFAULTS.aiModel,
+      aiBaseUrl: isLegacyCustom(input)
+        ? DEFAULTS.aiBaseUrl
+        : normalizeBaseUrl(input.aiBaseUrl),
+      aiModel: isLegacyCustom(input)
+        ? DEFAULTS.aiModel
+        : normalizeModel(input.aiModel),
       supadataApiKey:
         typeof input.supadataApiKey === "string"
           ? input.supadataApiKey.trim()
@@ -42,8 +75,8 @@ var YTD_SETTINGS = (() => {
     };
   }
 
-  function chatCompletionsUrl() {
-    return `${DEFAULTS.aiBaseUrl}/chat/completions`;
+  function chatCompletionsUrl(baseUrl = DEFAULTS.aiBaseUrl) {
+    return `${normalizeBaseUrl(baseUrl)}/chat/completions`;
   }
 
   function canonicalYouTubeUrl(videoId) {
@@ -58,6 +91,7 @@ var YTD_SETTINGS = (() => {
     STORAGE_KEY,
     DEFAULTS,
     isLegacyCustom,
+    isValidAiBaseUrl,
     normalize,
     migrateLegacyCustom,
     chatCompletionsUrl,
