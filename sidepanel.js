@@ -47,6 +47,8 @@ let currentNotes = [];
 let currentNotesFilterVideoId = null;
 const TRANSLATION_MESSAGE_TIMEOUT_MS = 130_000;
 const TRANSLATION_BATCH_SIZE = 3;
+const TRANSLATION_MAX_AUTO_ATTEMPTS = 3;
+const TRANSLATION_RETRY_BASE_DELAY_MS = 2000;
 
 // --- Transcript search state ---
 // Matches point to visible marks in the active transcript language mode.
@@ -92,6 +94,58 @@ function sendTranslationMessage(message) {
       (error) => finish(reject, error),
     );
   });
+}
+
+/**
+ * Decides whether a failed batch deserves an automatic retry. Auth/config
+ * errors never recover on their own; rate limits, timeouts, truncated or
+ * malformed model output usually do.
+ */
+function isRetryableTranslationError(result) {
+  if (!result || result.success) return false;
+  if (result.code === "NO_AI_KEY" || result.code === "INVALID_AI_KEY") {
+    return false;
+  }
+  if (result.code === "RATE_LIMITED" || result.code === "EMPTY_AI_RESPONSE") {
+    return true;
+  }
+  return /timed? out|inactive|exceeded|network|failed to fetch|JSON|unexpected token|unterminated/i.test(
+    String(result.error || ""),
+  );
+}
+
+function translationRetryDelay(attempt) {
+  return new Promise((resolve) =>
+    setTimeout(resolve, TRANSLATION_RETRY_BASE_DELAY_MS * attempt),
+  );
+}
+
+/**
+ * Retries a translation message up to TRANSLATION_MAX_AUTO_ATTEMPTS times with
+ * linear backoff. Non-retryable errors return immediately. Stops early when
+ * the caller's generation went stale (user switched video or language mode).
+ */
+async function sendTranslationWithRetry(message, isStale) {
+  let lastResult = null;
+  let lastError = null;
+  for (let attempt = 1; attempt <= TRANSLATION_MAX_AUTO_ATTEMPTS; attempt += 1) {
+    if (isStale()) return { success: false, error: "Translation cancelled." };
+    try {
+      const result = await sendTranslationMessage(message);
+      if (result?.success || !isRetryableTranslationError(result)) {
+        return result;
+      }
+      lastResult = result;
+    } catch (error) {
+      // Watchdog timeouts and dead message channels are transient.
+      lastError = error;
+    }
+    if (attempt < TRANSLATION_MAX_AUTO_ATTEMPTS) {
+      await translationRetryDelay(attempt);
+    }
+  }
+  if (!lastResult && lastError) throw lastError;
+  return lastResult;
 }
 
 // --- Auto-scroll state (follow video playback in transcript) ---
@@ -2739,15 +2793,18 @@ async function requestTranscriptTranslationBatch(
   const sourceBatch = indices.map((index) => segments[index]);
   setTranslatingSpinner(true);
   try {
-    const result = await sendTranslationMessage({
-      action: "translateContent",
-      content: {
-        segments: sourceBatch.map(({ id, text }) => ({ id, text })),
+    const result = await sendTranslationWithRetry(
+      {
+        action: "translateContent",
+        content: {
+          segments: sourceBatch.map(({ id, text }) => ({ id, text })),
+        },
+        contentType: "transcriptBatch",
+        targetLanguage: "zh",
+        videoTitle: currentVideoTitle,
       },
-      contentType: "transcriptBatch",
-      targetLanguage: "zh",
-      videoTitle: currentVideoTitle,
-    });
+      () => generation !== translationGeneration,
+    );
 
     const isStale =
       generation !== translationGeneration ||
@@ -2893,6 +2950,8 @@ function setTranslatingSpinner(show) {
 // not read this object at runtime.
 globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   sendTranslationMessage,
+  sendTranslationWithRetry,
+  isRetryableTranslationError,
   groupTranscriptEntries,
   splitOversizedThought,
   alignTranslatedSegmentBatch,
