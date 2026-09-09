@@ -12,6 +12,10 @@ explainer-video/
 .agents/
 .augment/
 .claude/
+.codegraph/
+.gh-analyze/
+.omo/
+.ua/
 skills/
 skills-lock.json
 .playwright-mcp/
