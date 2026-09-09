@@ -128,7 +128,9 @@ test("release copy documents current scope without em dashes", () => {
   assert.match(optionsPage, /dash\.supadata\.ai\/auth\/sign-up/i);
   assert.match(optionsPage, /platform\.deepseek\.com\/api_keys/i);
   assert.doesNotMatch(optionsPage, /<select\b/i);
-  assert.doesNotMatch(optionsPage, /id="(?:provider|aiBaseUrl|aiModel)"/);
+  assert.doesNotMatch(optionsPage, /id="provider"/);
+  assert.match(optionsPage, /id="aiBaseUrl"/);
+  assert.match(optionsPage, /id="aiModel"/);
   const detailsTag = optionsPage.match(
     /<details\b[^>]*class="card customization-card"[^>]*>/,
   );
