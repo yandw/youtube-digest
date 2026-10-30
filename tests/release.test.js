@@ -338,3 +338,8 @@ test("published prompt files contain runtime sections", () => {
     }
   }
 });
+
+test("captions.js ships in the release and loads in the service worker", () => {
+  assert.match(read("scripts/check-release.sh"), /"captions\.js"/);
+  assert.match(read("background.js"), /importScripts\("settings\.js", "captions\.js"\)/);
+});

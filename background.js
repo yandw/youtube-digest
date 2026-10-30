@@ -13,7 +13,7 @@
 
 // Import safe defaults and validation helpers. Secret keys live in
 // chrome.storage.local and are never part of the extension source.
-importScripts("settings.js");
+importScripts("settings.js", "captions.js");
 
 const DEBUG = false;
 const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
@@ -624,148 +624,95 @@ async function getPlayerVideoDetails(tabId) {
 }
 
 // ============================================================
-// TRANSCRIPT FETCHING VIA SUPADATA API
+// TRANSCRIPT FETCHING FROM YOUTUBE CAPTIONS
 // ============================================================
 
 /**
- * Fetches the transcript for a YouTube video using Supadata API.
+ * Fetches the transcript for a YouTube video by reading Caption Tracks
+ * directly from the watch page and requesting timedtext data.
  *
- * Supadata is a specialized service that reliably extracts transcripts
- * from YouTube videos. It handles all the complexity of parsing YouTube's
- * internal data structures, dealing with different caption formats, etc.
+ * Supadata-free: no third-party API, no extra key, works for both native
+ * and auto-generated captions. Trade-off: depends on YouTube's non-public
+ * page structure and timedtext endpoint.
  *
- * API Docs: https://docs.supadata.ai
- *
- * @param {string} videoId - The YouTube video ID (e.g., "dQw4w9WgXcQ")
- * @returns {Object} - { success, transcript, transcriptText, language } or { success: false, error }
+ * @param {string} videoId - The 11-character YouTube video ID
+ * @returns {Promise<Object>} { success, transcript, transcriptText, transcriptTextTimestamped, language, captionKind, error, message }
  */
 async function handleFetchTranscript(videoId) {
   try {
-    const settings = await getSettings();
-    if (!settings.supadataApiKey) {
+    // 1. Inject MAIN-world script to read ytInitialPlayerResponse caption tracks.
+    const tab = await chrome.tabs.query({ active: true, currentWindow: true }).then((t) => t[0]);
+    if (!tab?.id) {
       return {
         success: false,
-        error: "NO_SUPADATA_KEY",
-        message: "Supadata API key not configured. Open YouTube Digest Settings.",
+        error: "NO_TAB",
+        message: "Could not identify the active tab.",
       };
     }
 
-    // Share only the canonical watch URL. This strips playlist, referral,
-    // timestamp, and other browsing parameters from the active tab URL.
-    const canonicalVideoUrl = YTD_SETTINGS.canonicalYouTubeUrl(videoId);
-    // Using the universal transcript endpoint with text=false to get timestamped chunks
-    const apiUrl = new URL("https://api.supadata.ai/v1/transcript");
-    apiUrl.searchParams.set("url", canonicalVideoUrl);
-    apiUrl.searchParams.set("text", "false"); // Get timestamped chunks, not plain text
-    apiUrl.searchParams.set("lang", "en"); // Prefer English
-    // Caption-only product scope: never fall back to paid AI transcription.
-    apiUrl.searchParams.set("mode", "native");
-
-    // Make the API request
-    const response = await fetch(apiUrl.toString(), {
-      method: "GET",
-      headers: {
-        "x-api-key": settings.supadataApiKey,
+    const injectionResults = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      func: () => {
+        try {
+          const response = window.ytInitialPlayerResponse;
+          const tracks = response?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+          return Array.isArray(tracks) ? tracks : [];
+        } catch (e) {
+          return [];
+        }
       },
     });
 
-    // Handle async jobs (for videos > 20 minutes, Supadata returns a job ID)
-    if (response.status === 202) {
-      const jobData = await response.json();
-      // Poll for the result
-      return await pollTranscriptJob(jobData.jobId, settings.supadataApiKey);
-    }
-
-    if (response.status === 206) {
+    const tracks = injectionResults?.[0]?.result || [];
+    if (tracks.length === 0) {
       return {
         success: false,
         error: "NO_TRANSCRIPT",
-        message: "No native subtitle track is available for this video.",
+        message: "本视频没有字幕。",
       };
     }
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      if (response.status === 401) {
-        return {
-          success: false,
-          error: "INVALID_SUPADATA_KEY",
-          message: "Your Supadata API key is invalid. Open YouTube Digest Settings.",
-        };
-      }
-      if (response.status === 404) {
-        return {
-          success: false,
-          error: "NO_TRANSCRIPT",
-          message: "No subtitles found for this video.",
-        };
-      }
-      if (response.status === 429) {
-        return {
-          success: false,
-          error: "RATE_LIMITED",
-          message:
-            "Supadata rate limit reached. Please wait a minute and try again.",
-        };
-      }
-      throw new Error(
-        errorData.message || `Supadata API error: ${response.status}`,
-      );
-    }
-
-    const data = await response.json();
-
-    // Parse the response into our internal format
-    // Supadata returns: { content: [{ text, offset, duration, lang }], lang, availableLangs }
-    const transcript = [];
-    let transcriptTextPlain = ""; // Plain text for display/export
-    let transcriptTextTimestamped = ""; // Timestamped text for AI analysis
-
-    if (data.content && Array.isArray(data.content)) {
-      for (const chunk of data.content) {
-        if (chunk.text) {
-          // Clean up caption artifacts:
-          // ">>" = speaker change marker from YouTube auto-captions
-          const cleanText = chunk.text.replace(/>> ?/g, "").trim();
-          if (!cleanText) continue; // Skip if nothing left after cleanup
-
-          // offset is in milliseconds, convert to seconds
-          const startSeconds = Math.floor((chunk.offset || 0) / 1000);
-          const minutes = Math.floor(startSeconds / 60);
-          const seconds = startSeconds % 60;
-          const timestamp = `${minutes}:${String(seconds).padStart(2, "0")}`;
-
-          transcript.push({
-            text: cleanText,
-            start: startSeconds,
-            duration: Math.floor((chunk.duration || 0) / 1000),
-            language: chunk.lang || data.lang || null,
-          });
-
-          // Plain text without timestamps (for display/export)
-          transcriptTextPlain += cleanText + " ";
-
-          // Timestamped text for DeepSeek (format: [MM:SS] text)
-          // This allows the model to reference actual transcript positions.
-          transcriptTextTimestamped += `[${timestamp}] ${cleanText}\n`;
-        }
-      }
-    }
-
-    if (transcript.length === 0) {
+    // 2. Apply Caption Selection: Native (zh > en > other) beats Auto (same order).
+    const selectedTrack = YTD_CAPTIONS.selectCaptionTrack(tracks);
+    if (!selectedTrack || !selectedTrack.baseUrl) {
       return {
         success: false,
-        error: "EMPTY_TRANSCRIPT",
-        message: "Supadata returned an empty transcript for this video.",
+        error: "NO_TRANSCRIPT",
+        message: "本视频没有字幕。",
       };
     }
 
+    // 3. Request timedtext with fmt=json3 for timestamped chunks.
+    const timedtextUrl = selectedTrack.baseUrl + "&fmt=json3";
+    const response = await fetch(timedtextUrl);
+    if (!response.ok) {
+      return {
+        success: false,
+        error: "TIMEDTEXT_ERROR",
+        message: `字幕数据请求失败: ${response.status}`,
+      };
+    }
+
+    const json3 = await response.json();
+    const parsed = YTD_CAPTIONS.parseTimedtextJson3(json3, selectedTrack.languageCode);
+
+    if (parsed.transcript.length === 0) {
+      return {
+        success: false,
+        error: "EMPTY_TIMEDTEXT",
+        message: "字幕数据为空。请在播放器里打开字幕后重试。",
+      };
+    }
+
+    // 4. Return in the same format sidepanel.js expects.
     return {
       success: true,
-      transcript: transcript,
-      transcriptText: transcriptTextPlain.trim(), // For display
-      transcriptTextTimestamped: transcriptTextTimestamped.trim(), // For AI
-      language: typeof data.lang === "string" ? data.lang : null,
+      transcript: parsed.transcript,
+      transcriptText: parsed.transcriptTextPlain,
+      transcriptTextTimestamped: parsed.transcriptTextTimestamped,
+      language: selectedTrack.languageCode,
+      captionKind: selectedTrack.kind === "asr" ? "asr" : "native",
     };
   } catch (error) {
     console.error("Transcript fetch error:", error);
@@ -776,82 +723,6 @@ async function handleFetchTranscript(videoId) {
   }
 }
 
-/**
- * Polls for transcript job completion (for long videos).
- * Supadata processes videos > 20 minutes asynchronously.
- *
- * @param {string} jobId - The job ID returned by the initial request
- * @returns {Object} - Same format as handleFetchTranscript
- */
-async function pollTranscriptJob(jobId, supadataApiKey) {
-  const maxAttempts = 60; // Max 60 seconds of polling
-  const pollInterval = 1000; // Poll every 1 second
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    // Wait before polling
-    await new Promise((resolve) => setTimeout(resolve, pollInterval));
-
-    const response = await fetch(
-      `https://api.supadata.ai/v1/transcript/${encodeURIComponent(jobId)}`,
-      {
-        headers: { "x-api-key": supadataApiKey },
-      },
-    );
-
-    if (!response.ok) {
-      throw new Error(`Job polling failed: ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    if (data.status === "completed") {
-      // Parse the completed transcript
-      const transcript = [];
-      let transcriptTextPlain = "";
-      let transcriptTextTimestamped = "";
-
-      if (data.content && Array.isArray(data.content)) {
-        for (const chunk of data.content) {
-          if (chunk.text) {
-            // Clean up caption artifacts (">>" = speaker change marker)
-            const cleanText = chunk.text.replace(/>> ?/g, "").trim();
-            if (!cleanText) continue;
-
-            const startSeconds = Math.floor((chunk.offset || 0) / 1000);
-            const minutes = Math.floor(startSeconds / 60);
-            const seconds = startSeconds % 60;
-            const timestamp = `${minutes}:${String(seconds).padStart(2, "0")}`;
-
-            transcript.push({
-              text: cleanText,
-              start: startSeconds,
-              duration: Math.floor((chunk.duration || 0) / 1000),
-              language: chunk.lang || data.lang || null,
-            });
-            transcriptTextPlain += cleanText + " ";
-            transcriptTextTimestamped += `[${timestamp}] ${chunk.text}\n`;
-          }
-        }
-      }
-
-      return {
-        success: true,
-        transcript: transcript,
-        transcriptText: transcriptTextPlain.trim(),
-        transcriptTextTimestamped: transcriptTextTimestamped.trim(),
-        language: typeof data.lang === "string" ? data.lang : null,
-      };
-    }
-
-    if (data.status === "failed") {
-      throw new Error("Transcript processing failed");
-    }
-
-    // Status is 'queued' or 'active' — keep polling
-  }
-
-  throw new Error("Transcript processing timed out");
-}
 
 // ============================================================
 // JSON HELPER
