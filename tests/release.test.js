@@ -85,18 +85,11 @@ test("release copy documents current scope without em dashes", () => {
   assert.match(chineseReadme, /不接受上游 Issue 或 Pull Request/);
   assert.match(chineseReadme, /增加更多翻译语言/);
 
-  assert.match(readme, /100 credits per month/i);
-  assert.match(readme, /native transcript request uses \*\*1 credit\*\*/i);
-  assert.match(readme, /generated transcript costs \*\*2 credits per video minute\*\*/i);
-  assert.match(readme, /HTTP `206` still uses \*\*1 credit\*\*/i);
-  assert.match(readme, /forces `mode=native`/i);
-  assert.match(readme, /roughly 100 transcript lookups per month/i);
-  assert.match(readme, /supadata\.ai\/pricing/i);
-  assert.match(readme, /docs\.supadata\.ai\/get-transcript/i);
-  assert.match(readme, /dash\.supadata\.ai\/auth\/sign-up/i);
   assert.match(readme, /platform\.deepseek\.com\/api_keys/i);
   assert.match(readme, /api-docs\.deepseek\.com/i);
   assert.match(readme, /api-docs\.deepseek\.com\/quick_start\/pricing/i);
+  assert.doesNotMatch(readme, /supadata/i);
+  assert.doesNotMatch(chineseReadme, /supadata/i);
   assert.match(readme, /\$0\.007[\s\S]*\$0\.014/);
   assert.match(readme, /\$0\.22[\s\S]*\$0\.44/);
   assert.match(readme, /\$0\.66[\s\S]*\$1\.32/);
@@ -114,7 +107,6 @@ test("release copy documents current scope without em dashes", () => {
   assert.match(chineseReadme, /32,600 \u4e2a\u8f93\u5165 token/);
   assert.match(chineseReadme, /\$0\.003[^\n]*\$0\.010 USD/);
   assert.match(chineseReadme, /\$0\.005[^\n]*\$0\.020 USD/);
-  assert.match(chineseReadme, /dash\.supadata\.ai\/auth\/sign-up/i);
   assert.match(chineseReadme, /platform\.deepseek\.com\/api_keys/i);
   assert.match(readme, /^### The Digest button is missing on a YouTube video$/m);
   assert.match(
@@ -125,7 +117,7 @@ test("release copy documents current scope without em dashes", () => {
   const optionsPage = read("options.html");
   const optionsStyles = read("options.css");
   const optionsScript = read("options.js");
-  assert.match(optionsPage, /dash\.supadata\.ai\/auth\/sign-up/i);
+  assert.doesNotMatch(optionsPage, /supadata/i);
   assert.match(optionsPage, /platform\.deepseek\.com\/api_keys/i);
   assert.doesNotMatch(optionsPage, /<select\b/i);
   assert.doesNotMatch(optionsPage, /id="provider"/);

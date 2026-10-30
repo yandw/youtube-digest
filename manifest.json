@@ -7,7 +7,6 @@
   "permissions": ["sidePanel", "storage", "tabs", "scripting"],
   "host_permissions": [
     "https://www.youtube.com/*",
-    "https://api.supadata.ai/*",
     "https://api.deepseek.com/*"
   ],
   "action": {

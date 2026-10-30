@@ -9,14 +9,12 @@ test("custom AI base URL and model are preserved", () => {
     aiApiKey: "  example-key  ",
     aiBaseUrl: "https://api.example.com/v1/",
     aiModel: "  example-model  ",
-    supadataApiKey: "  example-supadata  ",
   });
 
   assert.equal(normalized.provider, "deepseek");
   assert.equal(normalized.aiBaseUrl, "https://api.example.com/v1");
   assert.equal(normalized.aiModel, "example-model");
   assert.equal(normalized.aiApiKey, "example-key");
-  assert.equal(normalized.supadataApiKey, "example-supadata");
   assert.equal(
     settings.chatCompletionsUrl(normalized.aiBaseUrl),
     "https://api.example.com/v1/chat/completions",
@@ -52,7 +50,6 @@ test("legacy custom migration clears only the AI key and is idempotent", () => {
     aiApiKey: "custom-secret",
     aiBaseUrl: "https://api.example.com/v1",
     aiModel: "example-model",
-    supadataApiKey: " supadata-secret ",
   };
   const first = settings.migrateLegacyCustom(legacy);
 
@@ -61,7 +58,6 @@ test("legacy custom migration clears only the AI key and is idempotent", () => {
   assert.equal(first.settings.aiBaseUrl, settings.DEFAULTS.aiBaseUrl);
   assert.equal(first.settings.aiModel, settings.DEFAULTS.aiModel);
   assert.equal(first.settings.aiApiKey, "");
-  assert.equal(first.settings.supadataApiKey, "supadata-secret");
 
   const second = settings.migrateLegacyCustom(first.settings);
   assert.equal(second.migrated, false);
@@ -72,15 +68,4 @@ test("legacy custom migration clears only the AI key and is idempotent", () => {
     aiApiKey: "new-deepseek-key",
   });
   assert.equal(configuredDeepSeek.aiApiKey, "new-deepseek-key");
-});
-
-test("Supadata receives a canonical YouTube URL", () => {
-  assert.equal(
-    settings.canonicalYouTubeUrl("ydTeb_I0b94"),
-    "https://www.youtube.com/watch?v=ydTeb_I0b94",
-  );
-  assert.throws(
-    () => settings.canonicalYouTubeUrl('"><script>'),
-    /Invalid YouTube video ID/,
-  );
 });

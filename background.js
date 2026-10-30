@@ -641,30 +641,52 @@ async function getPlayerVideoDetails(tabId) {
 async function handleFetchTranscript(videoId) {
   try {
     // 1. Inject MAIN-world script to read ytInitialPlayerResponse caption tracks.
-    const tab = await chrome.tabs.query({ active: true, currentWindow: true }).then((t) => t[0]);
+    // Find the tab playing this exact video; the active tab may be another one.
+    const watchTabs = await chrome.tabs.query({
+      url: "https://www.youtube.com/watch*",
+    });
+    const tab = watchTabs.find((t) => {
+      try {
+        return new URL(t.url).searchParams.get("v") === videoId;
+      } catch (_e) {
+        return false;
+      }
+    });
     if (!tab?.id) {
       return {
         success: false,
         error: "NO_TAB",
-        message: "Could not identify the active tab.",
+        message: "请先在 YouTube 标签页打开这个视频。",
       };
     }
 
     const injectionResults = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       world: "MAIN",
-      func: () => {
+      func: (expectedVideoId) => {
         try {
-          const response = window.ytInitialPlayerResponse;
-          const tracks = response?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+          // getPlayerResponse() follows SPA navigation; ytInitialPlayerResponse does not.
+          const player = document.getElementById("movie_player");
+          const response = player?.getPlayerResponse?.();
+          if (response?.videoDetails?.videoId !== expectedVideoId) return null;
+          const tracks =
+            response.captions?.playerCaptionsTracklistRenderer?.captionTracks;
           return Array.isArray(tracks) ? tracks : [];
         } catch (e) {
-          return [];
+          return null;
         }
       },
+      args: [videoId],
     });
 
-    const tracks = injectionResults?.[0]?.result || [];
+    const tracks = injectionResults?.[0]?.result;
+    if (!tracks) {
+      return {
+        success: false,
+        error: "PLAYER_NOT_READY",
+        message: "播放器还没加载完成,请稍后重试。",
+      };
+    }
     if (tracks.length === 0) {
       return {
         success: false,
