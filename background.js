@@ -3,7 +3,7 @@
  *
  * This is the "brain" of the extension. It runs in the background and handles:
  * 1. Opening the side panel when the user clicks the extension icon
- * 2. Fetching YouTube transcripts via Supadata API
+ * 2. Fetching YouTube transcripts from caption tracks via page injection
  * 3. Calling DeepSeek to analyze the transcript
  * 4. Sending results back to the side panel
  *
@@ -437,7 +437,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     getSettings()
       .then((settings) =>
         sendResponse({
-          hasSupadataKey: !!settings.supadataApiKey,
           hasAiKey: !!settings.aiApiKey,
         }),
       )
@@ -1071,7 +1070,7 @@ async function handleSaveNote(
     // First, try to get the transcript from the digest cache. The side panel
     // saves digests to chrome.storage.LOCAL — this used to look in
     // storage.session (the wrong store), so it missed every time and
-    // refetched the transcript from Supadata on every saved note.
+    // refetched the transcript on every saved note.
     let transcript = null;
     try {
       const cached = await chrome.storage.local.get(`digest_${videoId}`);

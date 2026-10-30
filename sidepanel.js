@@ -216,7 +216,7 @@ function splitOversizedThought(text, maxChars) {
 /**
  * Reconstructs complete sentences across raw caption boundaries. Each segment
  * keeps the timestamp of the first caption that contributed text. Character
- * and time limits prevent a malformed Supadata entry from becoming one giant
+ * and time limits prevent a malformed entry from becoming one giant
  * row while punctuation remains the preferred boundary.
  */
 function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
@@ -315,7 +315,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     action: "checkConfig",
   });
 
-  if (!configStatus.hasSupadataKey || !configStatus.hasAiKey) {
+  if (!configStatus.hasAiKey) {
     showConfigError(configStatus);
     return;
   }
@@ -724,13 +724,6 @@ async function startDigest(videoId, videoUrl) {
   });
 
   if (!transcriptResult.success) {
-    if (transcriptResult.error === "NO_SUPADATA_KEY") {
-      showError(
-        "API key missing",
-        "Add your Supadata API key in YouTube Digest Settings.",
-      );
-      return;
-    }
     showError(
       "No transcript found",
       transcriptResult.message || transcriptResult.error,
@@ -1473,8 +1466,7 @@ function showError(title, message) {
 
 function showConfigError(configStatus) {
   const missingKeys = [];
-  if (!configStatus.hasSupadataKey) missingKeys.push("Supadata");
-  if (!configStatus.hasAiKey) missingKeys.push("AI provider");
+  if (!configStatus.hasAiKey) missingKeys.push("DeepSeek");
 
   showState("error");
   document.getElementById("errorTitle").textContent = "API Keys Missing";
@@ -1998,7 +1990,7 @@ function getTranscriptContext(selectedText) {
 /**
  * Saves the current digest results to persistent local storage.
  * Results survive browser restarts — reopening the same video loads from cache
- * without consuming API tokens or Supadata calls.
+ * without consuming API tokens.
  * Cache expires after 30 days. Oldest entries evicted when > 20 videos cached.
  */
 async function saveToCache(videoId) {
