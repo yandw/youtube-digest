@@ -1016,6 +1016,51 @@ async function requestSttTranscription(audioBlob, mimeType, settings) {
   }
 }
 
+const STT_MAX_AUTO_ATTEMPTS = 3;
+const STT_RETRY_BASE_DELAY_MS = 2000;
+
+/**
+ * Decides whether a chunk request deserves an automatic retry, mirroring
+ * sidepanel.js's isRetryableTranslationError: auth/config errors never
+ * recover on their own, rate limits and timeouts usually do.
+ */
+function isRetryableSttError(error) {
+  if (error?.status === 401 || error?.status === 403) return false;
+  if (error?.code === "STT_TIMEOUT") return true;
+  if (error?.status === 429) return true;
+  if (typeof error?.status === "number" && error.status >= 500) return true;
+  return /timed? out|inactive|exceeded|network|failed to fetch/i.test(
+    String(error?.message || ""),
+  );
+}
+
+function sttRetryDelay(attempt) {
+  return new Promise((resolve) =>
+    setTimeout(resolve, STT_RETRY_BASE_DELAY_MS * attempt),
+  );
+}
+
+/**
+ * Retries a chunk's Speech Transcription request up to STT_MAX_AUTO_ATTEMPTS
+ * times with linear backoff, same shape as sidepanel.js's
+ * sendTranslationWithRetry. A single dropped chunk on a multi-chunk video
+ * would otherwise permanently show as a transcript gap for what's often a
+ * transient rate limit or timeout, one retry away from succeeding.
+ */
+async function requestSttTranscriptionWithRetry(audioBlob, mimeType, settings) {
+  let lastError;
+  for (let attempt = 1; attempt <= STT_MAX_AUTO_ATTEMPTS; attempt += 1) {
+    try {
+      return await requestSttTranscription(audioBlob, mimeType, settings);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableSttError(error)) throw error;
+    }
+    if (attempt < STT_MAX_AUTO_ATTEMPTS) await sttRetryDelay(attempt);
+  }
+  throw lastError;
+}
+
 /**
  * Pushes a transcriptProgress update to the open side panel. Fire-and-forget:
  * sendMessage throws if the panel isn't listening (closed, or never opened),
@@ -1167,7 +1212,7 @@ async function handleSpeechTranscribe(videoId, panel = {}) {
         message.offsetSeconds,
       );
       try {
-        const verboseJson = await requestSttTranscription(
+        const verboseJson = await requestSttTranscriptionWithRetry(
           audioBlob,
           message.mimeType,
           settings,
@@ -2094,4 +2139,6 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleTranslateContent,
   closePanelForTab,
   updatePanelForTab,
+  isRetryableSttError,
+  requestSttTranscriptionWithRetry,
 };
