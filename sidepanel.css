@@ -956,6 +956,23 @@ body {
   }
 }
 
+/* Speech Transcription reports real progress, so it swaps the ::after
+   indeterminate sweep for a real percentage fill driven by JS. */
+.loading-bar--determinate::after {
+  content: none;
+}
+
+.loading-bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
 .loading-text {
   font-family: var(--font-display);
   font-weight: 600;

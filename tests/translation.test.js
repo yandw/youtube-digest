@@ -121,16 +121,19 @@ function loadBackgroundHelpers({
       runtime: {
         onInstalled: listeners,
         onMessage: listeners,
+        onConnect: listeners,
         openOptionsPage() {},
         getURL: (resourcePath) => `chrome-extension://test/${resourcePath}`,
         sendMessage: () => Promise.resolve({ success: true }),
       },
       tabs: { onUpdated: listeners, onActivated: listeners },
     },
+    YTD_SPEECH_TRANSCRIPTION: {},
     YTD_SETTINGS: {
       STORAGE_KEY: "ytd_settings",
       normalize: (value) => value,
       chatCompletionsUrl: (baseUrl) => `${baseUrl}/chat/completions`,
+      sttTranscriptionsUrl: (baseUrl) => `${baseUrl}/audio/transcriptions`,
       canonicalYouTubeUrl: (videoId) =>
         `https://www.youtube.com/watch?v=${videoId}`,
     },

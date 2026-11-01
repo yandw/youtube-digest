@@ -323,6 +323,30 @@ document.addEventListener("DOMContentLoaded", async () => {
   await checkCurrentTab();
 });
 
+// Kept open only so background.js can detect the panel closing via
+// port.onDisconnect — chrome.runtime.sendMessage gives background no such
+// signal. Needed to stop a Speech Transcription recording (MediaRecorder +
+// chunk uploads running in the YouTube tab) when the user closes the panel
+// mid-video instead of letting it run unattended until the video ends.
+let sidePanelLifecyclePort = null;
+
+// The port name carries this window's ID so background.js can track one
+// port per window (a user can have the side panel open in more than one
+// browser window at once, each transcribing a different video) instead of
+// one shared port that the second window's connect would silently steal.
+// Awaits chrome.windows.getCurrent() directly rather than relying on the
+// module-level panelWindowId variable, since that's set asynchronously at
+// load and could still be null if this runs before it resolves.
+async function openSidePanelLifecyclePort() {
+  if (sidePanelLifecyclePort) return sidePanelLifecyclePort.windowId;
+  const { id: windowId } = await chrome.windows.getCurrent();
+  sidePanelLifecyclePort = Object.assign(
+    chrome.runtime.connect({ name: `sidePanelLifecycle:${windowId}` }),
+    { windowId },
+  );
+  return windowId;
+}
+
 // Listen for messages from the Digest button on YouTube page
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "startDigestFromButton") {
@@ -334,8 +358,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ success: true });
   }
   if (message.action === "transcriptProgress") {
-    // Background is telling us the transcript fetch status changed
-    updateLoading(message.title, message.subtitle);
+    // Background is telling us the transcript fetch status changed.
+    // secondsTranscribed only accompanies Speech Transcription progress;
+    // every other caller of pushTranscriptProgress omits it, so the
+    // existing indeterminate bar still plays for those (percent undefined).
+    const percent =
+      typeof message.secondsTranscribed === "number" && currentVideoDuration > 0
+        ? (message.secondsTranscribed / currentVideoDuration) * 100
+        : undefined;
+    updateLoading(message.title, message.subtitle, percent);
     sendResponse({ success: true });
   }
   if (message.action === "noteSaved") {
@@ -717,10 +748,28 @@ async function startDigest(videoId, videoUrl) {
 
   showState("loading");
   updateLoading("Fetching transcript", "");
+  const lifecycleWindowId = await openSidePanelLifecyclePort();
+
+  // Speech Transcription (the No-Caption Video fallback) can only record
+  // from the current playback position onward — there's no way to recover
+  // audio for time already played before the panel opened. Let the user
+  // know up front rather than have them discover a gap in the Transcript
+  // later with no explanation.
+  const currentTimeResult = await chrome.runtime.sendMessage({
+    action: "relayToContent",
+    payload: { action: "getCurrentTime" },
+  });
+  if ((currentTimeResult?.response?.currentTime || 0) > 5) {
+    updateLoading(
+      "Fetching transcript",
+      "若视频无字幕,语音转录将从当前播放位置开始;从头播放可获取完整转录。",
+    );
+  }
 
   const transcriptResult = await chrome.runtime.sendMessage({
     action: "fetchTranscript",
     videoId: videoId,
+    panelWindowId: lifecycleWindowId,
   });
 
   if (!transcriptResult.success) {
@@ -1451,9 +1500,22 @@ function showState(state) {
   }
 }
 
-function updateLoading(title, subtitle) {
+function updateLoading(title, subtitle, percent) {
   document.getElementById("loadingText").textContent = title;
   document.getElementById("loadingSubtext").textContent = subtitle;
+
+  // Speech Transcription reports real progress (percent is a number);
+  // every other loading state (caption fetch, AI calls) keeps the
+  // existing indeterminate animated bar by leaving percent undefined.
+  const bar = document.getElementById("loadingBar");
+  const fill = document.getElementById("loadingBarFill");
+  if (typeof percent === "number") {
+    bar.classList.add("loading-bar--determinate");
+    fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  } else {
+    bar.classList.remove("loading-bar--determinate");
+    fill.style.width = "";
+  }
 }
 
 function showError(title, message) {

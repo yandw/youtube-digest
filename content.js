@@ -113,6 +113,45 @@ if (document.readyState === "loading") {
 }
 
 // ============================================================
+// SPEECH TRANSCRIPTION RECORDER BRIDGE
+// ============================================================
+
+// A marker only our own MAIN-world recorder script sets, so we don't relay
+// postMessage traffic that YouTube's own page scripts (or other extensions)
+// happen to send through the same window.
+const SPEECH_TRANSCRIPTION_SOURCE = "ytd-speech-transcription";
+
+/**
+ * The recorder itself runs in the page's MAIN world (chrome.scripting
+ * .executeScript with world: "MAIN"), because that's the only place with a
+ * reference to the real <video> element. MAIN world can't call
+ * chrome.runtime.sendMessage directly, so it reaches us — the isolated-world
+ * content script — via window.postMessage, and we relay to background.js.
+ */
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+  const data = event.data;
+  if (!data || data.source !== SPEECH_TRANSCRIPTION_SOURCE) return;
+
+  chrome.runtime.sendMessage({
+    action: "speechTranscriptionChunk",
+    videoId: data.videoId,
+    chunkIndex: data.chunkIndex,
+    offsetSeconds: data.offsetSeconds,
+    durationSeconds: data.durationSeconds,
+    isFinal: data.isFinal,
+    // ArrayBuffer survives postMessage's structured clone; chrome.runtime
+    // .sendMessage re-serializes to JSON, so hand it over as a plain array
+    // of bytes rather than losing it to an empty {} in transit.
+    audioBytes: data.audioBytes ? Array.from(new Uint8Array(data.audioBytes)) : null,
+    mimeType: data.mimeType,
+  }).catch(() => {
+    // Background may already be done with this video (panel closed); the
+    // recorder's own stop path doesn't depend on this call succeeding.
+  });
+});
+
+// ============================================================
 // MESSAGE HANDLING
 // ============================================================
 
@@ -159,6 +198,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "showNoteSavedFeedback") {
     // Show brief feedback that note was saved
     showNoteSavedToast(message.note);
+    sendResponse({ success: true });
+    return false;
+  }
+
+  if (message.action === "stopSpeechTranscriptionRecording") {
+    // Relay into MAIN world: only the injected recorder script there holds
+    // the MediaRecorder instance, so we can't stop it directly from here.
+    window.postMessage(
+      { source: SPEECH_TRANSCRIPTION_SOURCE, command: "stop", videoId: message.videoId },
+      "*",
+    );
     sendResponse({ success: true });
     return false;
   }
@@ -801,6 +851,15 @@ function escapeHtmlForContent(text) {
  * we clean up old markers and re-inject the button.
  */
 document.addEventListener("yt-navigate-finish", () => {
+  // Stop any Speech Transcription recorder left running for the video we're
+  // navigating away from. YouTube's SPA navigation doesn't reload the page,
+  // so a recorder tied to the old <video> element would otherwise keep
+  // running (its own "ended" listener never fires, since that video never
+  // actually ends) and post chunks under a videoId nothing is listening for
+  // anymore. The recorder checks the command's videoId itself, so broadcast
+  // without one and let it compare against whichever video it's recording.
+  window.postMessage({ source: SPEECH_TRANSCRIPTION_SOURCE, command: "stopAll" }, "*");
+
   // Clean up old key moment markers when navigating to a new video
   const existingMarkers = document.querySelectorAll(".ytd-key-moment-markers");
   existingMarkers.forEach((m) => m.remove());

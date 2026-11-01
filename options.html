@@ -113,6 +113,79 @@
           </div>
         </section>
 
+        <section class="card">
+          <h2 data-i18n="sttProvider">Speech Transcription provider</h2>
+          <div
+            class="provider-summary"
+            aria-label="Speech Transcription provider"
+            data-i18n-aria-label="sttProviderSummaryLabel"
+          >
+            <span class="provider-name">Groq Whisper</span>
+            <span class="provider-badge" data-i18n="sttOptionalBadge"
+              >Optional</span
+            >
+          </div>
+
+          <label for="sttApiKey" data-i18n="sttApiKeyLabel"
+            >Speech Transcription API key</label
+          >
+          <input
+            id="sttApiKey"
+            name="sttApiKey"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Paste your Speech Transcription key"
+          />
+          <p class="help">
+            <span data-i18n="sttHelp"
+              >Used only for videos with no Caption Track. Recorded audio is
+              sent to this provider while the side panel is open and
+              playing. Leave the key empty to keep showing "no captions" for
+              those videos instead. </span
+            >
+            <a
+              href="https://console.groq.com/keys"
+              target="_blank"
+              rel="noreferrer"
+              data-i18n="sttLink"
+              >Create a Groq API key</a
+            ><span data-i18n="sttHelpSuffix">.</span>
+          </p>
+
+          <label for="sttBaseUrl" data-i18n="sttBaseUrlLabel"
+            >API base URL</label
+          >
+          <input
+            id="sttBaseUrl"
+            name="sttBaseUrl"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="https://api.groq.com/openai/v1"
+          />
+          <label for="sttModel" data-i18n="sttModelLabel">Model</label>
+          <input
+            id="sttModel"
+            name="sttModel"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="whisper-large-v3-turbo"
+          />
+          <p class="help" data-i18n="sttCustomEndpointHelp">
+            Defaults to Groq's OpenAI-compatible endpoint. Any
+            OpenAI-compatible /audio/transcriptions host works. If its host
+            is not api.groq.com, add that host to host_permissions in
+            manifest.json and reload the extension.
+          </p>
+          <div class="privacy-note" data-i18n="sttPrivacyNote">
+            When a video has no captions, the Speech Transcription provider
+            receives recorded audio from that video while you have it open
+            in the side panel.
+          </div>
+        </section>
+
         <div class="form-actions">
           <button class="primary" type="submit" data-i18n="saveSettings">
             Save settings

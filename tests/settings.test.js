@@ -44,6 +44,57 @@ test("empty or invalid AI endpoint config falls back to DeepSeek defaults", () =
   assert.equal(settings.isValidAiBaseUrl(""), false);
 });
 
+test("custom STT base URL, key, and model are preserved", () => {
+  const normalized = settings.normalize({
+    sttApiKey: "  stt-key  ",
+    sttBaseUrl: "https://api.example.com/stt/v1/",
+    sttModel: "  whisper-example  ",
+  });
+
+  assert.equal(normalized.sttBaseUrl, "https://api.example.com/stt/v1");
+  assert.equal(normalized.sttModel, "whisper-example");
+  assert.equal(normalized.sttApiKey, "stt-key");
+  assert.equal(
+    settings.sttTranscriptionsUrl(normalized.sttBaseUrl),
+    "https://api.example.com/stt/v1/audio/transcriptions",
+  );
+});
+
+test("empty or invalid STT endpoint config falls back to Groq defaults", () => {
+  const empty = settings.normalize({});
+  assert.equal(empty.sttBaseUrl, "https://api.groq.com/openai/v1");
+  assert.equal(empty.sttModel, "whisper-large-v3-turbo");
+  assert.equal(empty.sttApiKey, "");
+  assert.equal(
+    settings.sttTranscriptionsUrl(),
+    "https://api.groq.com/openai/v1/audio/transcriptions",
+  );
+
+  const invalid = settings.normalize({
+    sttBaseUrl: "not a url",
+    sttModel: "   ",
+  });
+  assert.equal(invalid.sttBaseUrl, settings.DEFAULTS.sttBaseUrl);
+  assert.equal(invalid.sttModel, settings.DEFAULTS.sttModel);
+});
+
+test("AI and STT provider fields normalize independently", () => {
+  // A broken AI config (legacy "custom") must not reset or clear the STT
+  // fields, and vice versa — the two providers are configured separately.
+  const normalized = settings.normalize({
+    provider: "custom",
+    aiApiKey: "custom-secret",
+    sttApiKey: "stt-secret",
+    sttBaseUrl: "https://api.groq.com/openai/v1",
+    sttModel: "whisper-large-v3",
+  });
+
+  assert.equal(normalized.aiApiKey, "");
+  assert.equal(normalized.aiBaseUrl, settings.DEFAULTS.aiBaseUrl);
+  assert.equal(normalized.sttApiKey, "stt-secret");
+  assert.equal(normalized.sttModel, "whisper-large-v3");
+});
+
 test("legacy custom migration clears only the AI key and is idempotent", () => {
   const legacy = {
     provider: "custom",

@@ -11,13 +11,19 @@ var YTD_SETTINGS = (() => {
     aiApiKey: "",
     aiBaseUrl: "https://api.deepseek.com",
     aiModel: "deepseek-v4-flash",
+    // Speech Transcription Provider: independent of the AI Provider above.
+    // Defaults to Groq's OpenAI-compatible endpoint, but the user can point
+    // it at any OpenAI-compatible /audio/transcriptions host.
+    sttApiKey: "",
+    sttBaseUrl: "https://api.groq.com/openai/v1",
+    sttModel: "whisper-large-v3-turbo",
   });
 
   function isLegacyCustom(input) {
     return !!input && input.provider === "custom";
   }
 
-  function isValidAiBaseUrl(value) {
+  function isValidBaseUrl(value) {
     if (typeof value !== "string") return false;
     const trimmed = value.trim();
     if (!trimmed) return false;
@@ -34,16 +40,17 @@ var YTD_SETTINGS = (() => {
     }
   }
 
-  function normalizeBaseUrl(value) {
-    return isValidAiBaseUrl(value)
-      ? value.trim().replace(/\/+$/, "")
-      : DEFAULTS.aiBaseUrl;
+  // Kept as a named alias: existing callers (options.js, tests) reference
+  // isValidAiBaseUrl specifically for the AI Provider field. The validation
+  // rule itself is shared with the Speech Transcription Provider field.
+  const isValidAiBaseUrl = isValidBaseUrl;
+
+  function normalizeBaseUrl(value, fallback) {
+    return isValidBaseUrl(value) ? value.trim().replace(/\/+$/, "") : fallback;
   }
 
-  function normalizeModel(value) {
-    return typeof value === "string" && value.trim()
-      ? value.trim()
-      : DEFAULTS.aiModel;
+  function normalizeModel(value, fallback) {
+    return typeof value === "string" && value.trim() ? value.trim() : fallback;
   }
 
   function normalize(input = {}) {
@@ -56,10 +63,16 @@ var YTD_SETTINGS = (() => {
           : "",
       aiBaseUrl: isLegacyCustom(input)
         ? DEFAULTS.aiBaseUrl
-        : normalizeBaseUrl(input.aiBaseUrl),
+        : normalizeBaseUrl(input.aiBaseUrl, DEFAULTS.aiBaseUrl),
       aiModel: isLegacyCustom(input)
         ? DEFAULTS.aiModel
-        : normalizeModel(input.aiModel),
+        : normalizeModel(input.aiModel, DEFAULTS.aiModel),
+      // Speech Transcription Provider fields are unrelated to the legacy
+      // "custom" AI provider migration, so they're never cleared by it.
+      sttApiKey:
+        typeof input.sttApiKey === "string" ? input.sttApiKey.trim() : "",
+      sttBaseUrl: normalizeBaseUrl(input.sttBaseUrl, DEFAULTS.sttBaseUrl),
+      sttModel: normalizeModel(input.sttModel, DEFAULTS.sttModel),
     };
   }
 
@@ -71,7 +84,11 @@ var YTD_SETTINGS = (() => {
   }
 
   function chatCompletionsUrl(baseUrl = DEFAULTS.aiBaseUrl) {
-    return `${normalizeBaseUrl(baseUrl)}/chat/completions`;
+    return `${normalizeBaseUrl(baseUrl, DEFAULTS.aiBaseUrl)}/chat/completions`;
+  }
+
+  function sttTranscriptionsUrl(baseUrl = DEFAULTS.sttBaseUrl) {
+    return `${normalizeBaseUrl(baseUrl, DEFAULTS.sttBaseUrl)}/audio/transcriptions`;
   }
 
   return {
@@ -79,9 +96,11 @@ var YTD_SETTINGS = (() => {
     DEFAULTS,
     isLegacyCustom,
     isValidAiBaseUrl,
+    isValidBaseUrl,
     normalize,
     migrateLegacyCustom,
     chatCompletionsUrl,
+    sttTranscriptionsUrl,
   };
 })();
 
