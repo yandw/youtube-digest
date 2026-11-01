@@ -130,6 +130,17 @@ const SPEECH_TRANSCRIPTION_SOURCE = "ytd-speech-transcription";
  */
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;
+  // Narrows to this page's own origin, matching the targetOrigin our own
+  // sends use (see injectSpeechTranscriptionRecorder in background.js) —
+  // this rules out a message meant for a different origin ending up here
+  // if YouTube's page structure ever changes, but it cannot distinguish
+  // our own injected script from another script also running on this page
+  // and also same-origin by definition: both end up with the same
+  // event.source and event.origin. The source field below is a marker to
+  // avoid colliding with unrelated page messages, not an authentication
+  // boundary — the only thing at risk if something else on the page sent a
+  // matching message is an early-stopped recording, not data exposure.
+  if (event.origin !== window.location.origin) return;
   const data = event.data;
   if (!data || data.source !== SPEECH_TRANSCRIPTION_SOURCE) return;
 
@@ -205,9 +216,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "stopSpeechTranscriptionRecording") {
     // Relay into MAIN world: only the injected recorder script there holds
     // the MediaRecorder instance, so we can't stop it directly from here.
+    // Scoped to this page's own origin rather than "*" so no other script
+    // on the page can receive or spoof this command.
     window.postMessage(
       { source: SPEECH_TRANSCRIPTION_SOURCE, command: "stop", videoId: message.videoId },
-      "*",
+      window.location.origin,
     );
     sendResponse({ success: true });
     return false;
@@ -858,7 +871,10 @@ document.addEventListener("yt-navigate-finish", () => {
   // actually ends) and post chunks under a videoId nothing is listening for
   // anymore. The recorder checks the command's videoId itself, so broadcast
   // without one and let it compare against whichever video it's recording.
-  window.postMessage({ source: SPEECH_TRANSCRIPTION_SOURCE, command: "stopAll" }, "*");
+  window.postMessage(
+    { source: SPEECH_TRANSCRIPTION_SOURCE, command: "stopAll" },
+    window.location.origin,
+  );
 
   // Clean up old key moment markers when navigating to a new video
   const existingMarkers = document.querySelectorAll(".ytd-key-moment-markers");

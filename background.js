@@ -822,11 +822,17 @@ async function findWatchTab(videoId) {
 function injectSpeechTranscriptionRecorder(videoId, chunkDurationSeconds) {
   const SOURCE = "ytd-speech-transcription";
 
+  // "*" as the postMessage targetOrigin would let any other script on this
+  // page (YouTube's own, or another extension's) receive and forge these
+  // messages; window.location.origin is always https://www.youtube.com
+  // here, so there's no reason to broadcast wider than that.
+  const targetOrigin = window.location.origin;
+
   const video = document.querySelector("video.html5-main-video");
   if (!video || typeof video.captureStream !== "function") {
     window.postMessage(
       { source: SOURCE, videoId, isFinal: true, error: "NO_VIDEO_ELEMENT" },
-      "*",
+      targetOrigin,
     );
     return;
   }
@@ -835,7 +841,7 @@ function injectSpeechTranscriptionRecorder(videoId, chunkDurationSeconds) {
   if (stream.getAudioTracks().length === 0) {
     window.postMessage(
       { source: SOURCE, videoId, isFinal: true, error: "NO_AUDIO_TRACK" },
-      "*",
+      targetOrigin,
     );
     return;
   }
@@ -880,7 +886,7 @@ function injectSpeechTranscriptionRecorder(videoId, chunkDurationSeconds) {
           audioBytes: arrayBuffer,
           mimeType,
         },
-        "*",
+        targetOrigin,
       );
 
       if (!stopped) {
@@ -904,7 +910,7 @@ function injectSpeechTranscriptionRecorder(videoId, chunkDurationSeconds) {
     } else {
       // No in-flight chunk to flush; tell content.js we're done so it can
       // stop waiting for a final postMessage that will never arrive.
-      window.postMessage({ source: SOURCE, videoId, isFinal: true, audioBytes: null }, "*");
+      window.postMessage({ source: SOURCE, videoId, isFinal: true, audioBytes: null }, targetOrigin);
     }
     video.removeEventListener("ended", stopRecording);
     window.removeEventListener("message", onStopCommand);
@@ -912,6 +918,7 @@ function injectSpeechTranscriptionRecorder(videoId, chunkDurationSeconds) {
 
   function onStopCommand(event) {
     if (event.source !== window) return;
+    if (event.origin !== targetOrigin) return;
     const data = event.data;
     if (!data || data.source !== SOURCE) return;
     if (data.command === "stop" && data.videoId === videoId) stopRecording();
