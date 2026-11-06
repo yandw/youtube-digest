@@ -16,8 +16,7 @@ Depending on the feature you use, YouTube Digest handles:
 - content you ask to translate;
 - notes you save;
 - DeepSeek configuration, including your API key;
-- Speech Transcription provider configuration, including your API key;
-- for a video with no Caption Track, audio recorded from playback while the side panel is open; and
+- retained Speech Transcription provider configuration, including any previously saved API key; and
 - cached transcript, digest, and translation results.
 
 ## Where data goes
@@ -36,13 +35,11 @@ The endpoint and `deepseek-v4-flash` model are fixed in the published Settings p
 
 ### Speech Transcription provider
 
-For a video with no Caption Track, and only if you have configured a Speech Transcription API key in Settings, YouTube Digest records the video's audio while it plays in the side panel and sends it, in chunks, to a Speech Transcription provider for transcription. The default provider is Groq's Whisper endpoint at `https://api.groq.com`; the Settings page lets you point this at any OpenAI-compatible `/audio/transcriptions` endpoint instead.
+The current version does not perform Speech Transcription: it does not record audio or send audio to Groq or any other transcription provider. Previously saved Speech Transcription settings remain in local extension storage for compatibility but are not used.
 
-Without a Speech Transcription API key configured, a video with no Caption Track shows a "no captions" message and no audio is recorded or sent anywhere.
+AI requests go directly from the extension to DeepSeek. They are authenticated with the key you supply. YouTube Digest's developer does not proxy or receive these requests.
 
-Requests go directly from the extension to the configured provider. They are authenticated with the key you supply. YouTube Digest's developer does not proxy or receive these requests.
-
-Those services process data under their own terms, privacy policies, retention practices, and account settings. Do not send confidential, personal, or regulated content unless their terms and your obligations permit it.
+DeepSeek processes data under its own terms, privacy policies, retention practices, and account settings. Do not send confidential, personal, or regulated content unless its terms and your obligations permit it.
 
 ## Local storage and retention
 
@@ -73,9 +70,10 @@ YouTube Digest uses Chrome permissions for these purposes:
 - `storage`: store settings, keys, notes, and cached results locally.
 - `tabs`: identify and interact with the active YouTube tab.
 - `scripting`: coordinate the extension's YouTube page controls.
-- YouTube host access: read the active video's URL and metadata, provide timestamp controls, and, for a video with no Caption Track, record its playing audio for Speech Transcription.
+- YouTube host access: read the active video's URL, metadata, and caption tracks, and provide timestamp controls.
 - DeepSeek host access: provide AI overviews, explanations, translation, and note polishing through DeepSeek V4 Flash.
-- Speech Transcription provider host access (default `api.groq.com`): transcribe recorded audio for a video with no Caption Track, when you have configured a Speech Transcription API key.
+- OpenRouter host access: allow AI features to use OpenRouter when it is configured as the AI provider in a local copy.
+- Speech Transcription provider host access (default `api.groq.com`) remains declared for compatibility with retained settings, but the current version does not use it.
 
 YouTube Digest does not use these permissions to monitor general browsing activity.
 

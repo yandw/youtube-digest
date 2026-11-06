@@ -84,19 +84,11 @@ YouTube Digest sends every DeepSeek request in non-thinking mode for responsive,
 
 Keys and settings are stored in Chrome's local extension storage on your device. Release builds do not include or use `config.js`.
 
-### Optional: Speech Transcription for videos with no captions
+### Caption selection order
 
-If a video has no Caption Track at all, YouTube Digest can transcribe its audio instead, using a separate, optional Speech Transcription API key:
+YouTube Digest tries Simplified Chinese (`zh-Hans`, including regional tracks such as `zh-CN`), Traditional Chinese (`zh-Hant`, including tracks such as `zh-TW`), YouTube auto-translated Chinese, English, then YouTube auto-translated English. Within a direct language group, native captions take precedence over auto-generated captions.
 
-1. Create a free API key at [Groq Console](https://console.groq.com/keys) (the default provider).
-2. Paste it into **Speech Transcription API key** in YouTube Digest Settings.
-
-```text
-Base URL: https://api.groq.com/openai/v1
-Model: whisper-large-v3-turbo
-```
-
-Without this key, a video with no Caption Track continues to show a "no captions" message, same as before. With it, opening the side panel on such a video records its audio while it plays and sends it, in chunks, to the configured provider; the Transcript fills in progressively as each chunk comes back. Recording only covers the video from the point the side panel was opened onward, so play the video from the start for a complete Transcript.
+Empty or failed caption responses fall through to the next candidate. If none of these five groups yields a transcript, the side panel reports that no suitable captions could be fetched. This version does not perform audio transcription.
 
 ## Use YouTube Digest
 

@@ -86,19 +86,11 @@ YouTube Digest 会让所有 DeepSeek 请求使用非思考模式，以获得更�
 
 API Key 和设置保存在你设备上的 Chrome 扩展本地存储中。发布包不会包含或使用 `config.js`。
 
-### 可选：为没有字幕的视频开启语音转录
+### 字幕选择顺序
 
-如果某个视频完全没有 Caption Track，YouTube Digest 可以改用语音转录来生成 Transcript，这需要单独配置一个可选的语音转录 API Key：
+YouTube Digest 按以下顺序尝试字幕：简体中文（`zh-Hans`，包括 `zh-CN` 等地区代码）、繁体中文（`zh-Hant`，包括 `zh-TW` 等地区代码）、YouTube 自动翻译的中文、英文、YouTube 自动翻译的英文。同一语言同时有原生字幕和自动生成字幕时，优先使用原生字幕。
 
-1. 在 [Groq Console](https://console.groq.com/keys) 创建一个免费 API Key（默认服务商）。
-2. 把它粘贴到 YouTube Digest 设置中的 **Speech Transcription API key**。
-
-```text
-Base URL: https://api.groq.com/openai/v1
-Model: whisper-large-v3-turbo
-```
-
-不配置这个 Key 时，没有字幕的视频会继续显示"本视频没有字幕"，和以前一样。配置后，在这类视频上打开侧边栏会录制正在播放的音频，分段发送给配置的服务商转录，Transcript 会随着视频播放逐步补全。录制只能从打开侧边栏那一刻开始，因此从头播放视频才能获得完整的 Transcript。
+某条字幕为空或请求失败时会继续尝试下一种。以上五类都没有可用内容时，侧边栏会提示“抓取不到合适的字幕”。当前版本不进行语音转录。
 
 ## 使用 YouTube Digest
 

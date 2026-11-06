@@ -378,13 +378,7 @@ chrome.runtime.onConnect.addListener((port) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // We need to return true to indicate we'll respond asynchronously
   if (message.action === "fetchTranscript") {
-    const port = sidePanelPortsByWindow.get(message.panelWindowId);
-    const panel = {
-      onDisconnect: (cb) => {
-        if (port) port.onDisconnect.addListener(cb);
-      },
-    };
-    handleFetchTranscript(message.videoId, panel)
+    handleFetchTranscript(message.videoId)
       .then(sendResponse)
       .catch((err) => sendResponse({ error: err.message }));
     return true; // Keep the message channel open for async response
@@ -656,9 +650,113 @@ async function getPlayerVideoDetails(tabId) {
   }
 }
 
+/**
+ * Chrome does not inject manifest content scripts into tabs that were already
+ * open when the extension was reloaded. Reconcile an existing script, or
+ * inject content.js once when that isolated world has no copy yet.
+ */
+async function ensureYouTubeContentScript(tabId) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "ISOLATED",
+    func: () => {
+      if (typeof injectDigestButton !== "function") return { loaded: false };
+      injectDigestButton();
+      return { loaded: true };
+    },
+  });
+  if (results?.[0]?.result?.loaded) return;
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content.js"],
+  });
+}
+
 // ============================================================
 // TRANSCRIPT FETCHING FROM YOUTUBE CAPTIONS
 // ============================================================
+
+// Runs in the YouTube MAIN world. The player adds a PO Token and client
+// parameters only when it issues its own timedtext request. Capture that
+// request, then restore both the patched network functions and the user's
+// original caption-switch state.
+async function capturePlayerCaptionRequest(expectedVideoId, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const button = document.querySelector(".ytp-subtitles-button");
+    if (!button) {
+      resolve(null);
+      return;
+    }
+
+    const captionsInitiallyOn =
+      button.getAttribute("aria-pressed") === "true";
+    const originalFetch = window.fetch;
+    const originalOpen = XMLHttpRequest.prototype.open;
+    let settled = false;
+    let timeoutId = null;
+    let reenableId = null;
+
+    function restore() {
+      window.fetch = originalFetch;
+      XMLHttpRequest.prototype.open = originalOpen;
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      if (reenableId !== null) clearTimeout(reenableId);
+    }
+
+    function finish(url) {
+      if (settled) return;
+      settled = true;
+      restore();
+      if (
+        !captionsInitiallyOn &&
+        button.getAttribute("aria-pressed") === "true"
+      ) {
+        button.click();
+      }
+      resolve(url);
+    }
+
+    function capture(input) {
+      try {
+        const raw =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input?.url;
+        const url = new URL(raw, window.location.origin);
+        if (
+          url.pathname === "/api/timedtext" &&
+          url.searchParams.get("v") === expectedVideoId &&
+          url.searchParams.get("pot")
+        ) {
+          finish(url.toString());
+        }
+      } catch (_e) {
+        // Ignore unrelated or malformed requests.
+      }
+    }
+
+    window.fetch = function (input, ...args) {
+      capture(input);
+      return originalFetch.call(this, input, ...args);
+    };
+    XMLHttpRequest.prototype.open = function (method, url, ...args) {
+      capture(url);
+      return originalOpen.call(this, method, url, ...args);
+    };
+
+    timeoutId = setTimeout(() => finish(null), timeoutMs);
+    if (captionsInitiallyOn) {
+      // Force one fresh request, ending with captions on again.
+      button.click();
+      reenableId = setTimeout(() => button.click(), 100);
+    } else {
+      button.click();
+    }
+  });
+}
 
 /**
  * Fetches the transcript for a YouTube video by reading Caption Tracks
@@ -668,20 +766,17 @@ async function getPlayerVideoDetails(tabId) {
  * and auto-generated captions. Trade-off: depends on YouTube's non-public
  * page structure and timedtext endpoint.
  *
- * No-Caption Video: if no Caption Track is found (or the chosen track
- * returns empty timedtext) and a Speech Transcription Provider API key is
- * configured, falls back to handleSpeechTranscribe instead of failing
- * immediately. Without a key, returns the same "本视频没有字幕" message as
- * before the fallback existed.
+ * Caption candidates are limited to Simplified Chinese, Traditional Chinese,
+ * automatically translated Chinese, English, and automatically translated
+ * English, in that order. Empty or failed responses fall through to the next
+ * candidate. If none produce a transcript, returns NO_SUITABLE_CAPTION.
  *
  * @param {string} videoId - The 11-character YouTube video ID
- * @param {{onDisconnect?: (cb: () => void) => void}} [panel] - forwarded to
- *   handleSpeechTranscribe so it can stop recording when the side panel closes
  * @returns {Promise<Object>} { success, transcript, transcriptText, transcriptTextTimestamped, language, captionKind, error, message }
  */
-async function handleFetchTranscript(videoId, panel = {}) {
+async function handleFetchTranscript(videoId) {
   try {
-    // 1. Inject MAIN-world script to read ytInitialPlayerResponse caption tracks.
+    // 1. Inject MAIN-world script to read caption tracks and translation targets.
     // Find the tab playing this exact video; the active tab may be another one.
     const watchTabs = await chrome.tabs.query({
       url: "https://www.youtube.com/watch*",
@@ -701,6 +796,13 @@ async function handleFetchTranscript(videoId, panel = {}) {
       };
     }
 
+    try {
+      await ensureYouTubeContentScript(tab.id);
+    } catch (error) {
+      // Transcript extraction uses the MAIN world and may still be available.
+      console.warn("[YouTube Digest BG] Content script recovery failed:", error.message);
+    }
+
     const injectionResults = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       world: "MAIN",
@@ -710,9 +812,16 @@ async function handleFetchTranscript(videoId, panel = {}) {
           const player = document.getElementById("movie_player");
           const response = player?.getPlayerResponse?.();
           if (response?.videoDetails?.videoId !== expectedVideoId) return null;
-          const tracks =
-            response.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-          return Array.isArray(tracks) ? tracks : [];
+          const renderer =
+            response.captions?.playerCaptionsTracklistRenderer;
+          return {
+            tracks: Array.isArray(renderer?.captionTracks)
+              ? renderer.captionTracks
+              : [],
+            translationLanguages: Array.isArray(renderer?.translationLanguages)
+              ? renderer.translationLanguages
+              : [],
+          };
         } catch (e) {
           return null;
         }
@@ -720,55 +829,55 @@ async function handleFetchTranscript(videoId, panel = {}) {
       args: [videoId],
     });
 
-    const tracks = injectionResults?.[0]?.result;
-    if (!tracks) {
+    const captionData = injectionResults?.[0]?.result;
+    if (!captionData) {
       return {
         success: false,
         error: "PLAYER_NOT_READY",
         message: "播放器还没加载完成,请稍后重试。",
       };
     }
-    if (tracks.length === 0) {
-      return await handleSpeechTranscribe(videoId, panel);
+
+    // 2. Try the public track URLs first. YouTube may return an empty body
+    // when the request lacks the player-issued PO Token.
+    const directResult = await YTD_CAPTIONS.fetchCaptionTranscript(
+      captionData.tracks,
+      captionData.translationLanguages,
+      fetch,
+    );
+    if (directResult.success) return directResult;
+    if (
+      YTD_CAPTIONS.selectCaptionCandidates(
+        captionData.tracks,
+        captionData.translationLanguages,
+      ).length === 0
+    ) {
+      return directResult;
     }
 
-    // 2. Apply Caption Selection: Native (zh > en > other) beats Auto (same order).
-    const selectedTrack = YTD_CAPTIONS.selectCaptionTrack(tracks);
-    if (!selectedTrack || !selectedTrack.baseUrl) {
-      return await handleSpeechTranscribe(videoId, panel);
+    // 3. Retry with the authorization parameters from the player's own
+    // caption request. The MAIN-world helper restores the caption switch.
+    let playerRequestUrl = null;
+    try {
+      const authorizedResults = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "MAIN",
+        func: capturePlayerCaptionRequest,
+        args: [videoId, 8000],
+      });
+      playerRequestUrl = authorizedResults?.[0]?.result || null;
+    } catch (_e) {
+      // Keep the readable direct-fetch failure if capture is unavailable.
     }
+    if (!playerRequestUrl) return directResult;
 
-    // 3. Request timedtext with fmt=json3 for timestamped chunks.
-    const timedtextUrl = selectedTrack.baseUrl + "&fmt=json3";
-    const response = await fetch(timedtextUrl);
-    if (!response.ok) {
-      return {
-        success: false,
-        error: "TIMEDTEXT_ERROR",
-        message: `字幕数据请求失败: ${response.status}`,
-      };
-    }
-
-    const json3 = await response.json();
-    const parsed = YTD_CAPTIONS.parseTimedtextJson3(json3, selectedTrack.languageCode);
-
-    if (parsed.transcript.length === 0) {
-      return {
-        success: false,
-        error: "EMPTY_TIMEDTEXT",
-        message: "字幕数据为空。请在播放器里打开字幕后重试。",
-      };
-    }
-
-    // 4. Return in the same format sidepanel.js expects.
-    return {
-      success: true,
-      transcript: parsed.transcript,
-      transcriptText: parsed.transcriptTextPlain,
-      transcriptTextTimestamped: parsed.transcriptTextTimestamped,
-      language: selectedTrack.languageCode,
-      captionKind: selectedTrack.kind === "asr" ? "asr" : "native",
-    };
+    return await YTD_CAPTIONS.fetchCaptionTranscript(
+      captionData.tracks,
+      captionData.translationLanguages,
+      fetch,
+      (url) =>
+        YTD_CAPTIONS.withPlayerCaptionAuthorization(url, playerRequestUrl),
+    );
   } catch (error) {
     console.error("Transcript fetch error:", error);
     return {
@@ -779,8 +888,12 @@ async function handleFetchTranscript(videoId, panel = {}) {
 }
 
 // ============================================================
-// SPEECH TRANSCRIPTION (No-Caption Video fallback)
+// SPEECH TRANSCRIPTION (currently dormant)
 // ============================================================
+//
+// Caption fetching no longer calls this subsystem. The implementation and
+// stored settings are retained on this feature branch, but no transcript
+// request starts recording or uploads audio.
 
 // One entry per videoId currently being recorded, so a second request for
 // the same video (or a stray chunk after the panel closed) can be ignored
@@ -2141,4 +2254,6 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   updatePanelForTab,
   isRetryableSttError,
   requestSttTranscriptionWithRetry,
+  capturePlayerCaptionRequest,
+  ensureYouTubeContentScript,
 };

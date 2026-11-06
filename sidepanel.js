@@ -330,14 +330,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 // mid-video instead of letting it run unattended until the video ends.
 let sidePanelLifecyclePort = null;
 
-// Set for the duration of one startDigest() call when the video was already
-// playing past the start when the panel opened. Speech Transcription's own
-// transcriptProgress updates would otherwise overwrite this hint within a
-// second or two of it appearing (the first chunk's progress push lands
-// almost immediately), so every subtext update during loading appends it
-// instead of replacing it outright.
-let recordingGapHint = null;
-
 // The port name carries this window's ID so background.js can track one
 // port per window (a user can have the side panel open in more than one
 // browser window at once, each transcribing a different video) instead of
@@ -374,10 +366,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       typeof message.secondsTranscribed === "number" && currentVideoDuration > 0
         ? (message.secondsTranscribed / currentVideoDuration) * 100
         : undefined;
-    const subtext = recordingGapHint
-      ? `${message.subtitle} ${recordingGapHint}`.trim()
-      : message.subtitle;
-    updateLoading(message.title, subtext, percent);
+    updateLoading(message.title, message.subtitle, percent);
     sendResponse({ success: true });
   }
   if (message.action === "noteSaved") {
@@ -758,30 +747,12 @@ async function startDigest(videoId, videoUrl) {
   }
 
   showState("loading");
-  recordingGapHint = null;
-  const lifecycleWindowId = await openSidePanelLifecyclePort();
-
-  // Speech Transcription (the No-Caption Video fallback) can only record
-  // from the current playback position onward — there's no way to recover
-  // audio for time already played before the panel opened. Let the user
-  // know up front rather than have them discover a gap in the Transcript
-  // later with no explanation. Stored in recordingGapHint rather than
-  // passed to updateLoading directly, because Speech Transcription's own
-  // progress pushes would otherwise overwrite it within a second or two.
-  const currentTimeResult = await chrome.runtime.sendMessage({
-    action: "relayToContent",
-    payload: { action: "getCurrentTime" },
-  });
-  if ((currentTimeResult?.response?.currentTime || 0) > 5) {
-    recordingGapHint =
-      "若视频无字幕,语音转录将从当前播放位置开始;从头播放可获取完整转录。";
-  }
-  updateLoading("Fetching transcript", recordingGapHint || "");
+  await openSidePanelLifecyclePort();
+  updateLoading("Fetching transcript", "");
 
   const transcriptResult = await chrome.runtime.sendMessage({
     action: "fetchTranscript",
     videoId: videoId,
-    panelWindowId: lifecycleWindowId,
   });
 
   if (!transcriptResult.success) {

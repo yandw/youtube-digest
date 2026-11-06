@@ -28,20 +28,20 @@ const YTD_OPTIONS = (() => {
         "When you use AI features, DeepSeek receives the video transcript and relevant video context. Review DeepSeek's terms and pricing before saving.",
       sttProvider: "Speech Transcription provider",
       sttProviderSummaryLabel: "Speech Transcription provider",
-      sttOptionalBadge: "Optional",
+      sttOptionalBadge: "Currently disabled",
       sttApiKeyLabel: "Speech Transcription API key",
       sttHelp:
-        "Used only for videos with no Caption Track. Recorded audio is sent to this provider while the side panel is open and playing. Leave the key empty to keep showing \"no captions\" for those videos instead. ",
+        "Reserved for a possible future version. Transcript fetching currently uses captions only and never records audio. ",
       sttLink: "Create a Groq API key",
       sttHelpSuffix: ".",
       sttBaseUrlLabel: "API base URL",
       sttModelLabel: "Model",
       sttCustomEndpointHelp:
-        "Defaults to Groq's OpenAI-compatible endpoint. Any OpenAI-compatible /audio/transcriptions host works. If its host is not api.groq.com, add that host to host_permissions in manifest.json and reload the extension.",
+        "These fields are preserved for compatibility but are not used in this version.",
       sttInvalidBaseUrl:
         "The Speech Transcription base URL is not a valid https URL (http is allowed only for localhost).",
       sttPrivacyNote:
-        "When a video has no captions, the Speech Transcription provider receives recorded audio from that video while you have it open in the side panel.",
+        "This version does not record or send audio. Speech Transcription settings remain stored locally but are not used.",
       saveSettings: "Save settings",
       localRemix: "Local remix",
       customizationTitle: "Want to use another AI model?",
@@ -123,20 +123,19 @@ const YTD_OPTIONS = (() => {
         "使用 AI 功能时，DeepSeek 会收到视频字幕及相关视频上下文。保存前请查看 DeepSeek 的服务条款和价格。",
       sttProvider: "语音转录服务",
       sttProviderSummaryLabel: "语音转录服务",
-      sttOptionalBadge: "可选",
+      sttOptionalBadge: "当前未启用",
       sttApiKeyLabel: "语音转录 API 密钥",
       sttHelp:
-        "仅用于没有字幕的视频。侧边栏打开并播放视频时，录制到的音频会发送给这个服务。留空密钥则这类视频继续显示“本视频没有字幕”。",
+        "这些设置仅为可能的后续版本保留。当前版本只抓取字幕，不会录制音频。",
       sttLink: "创建 Groq API 密钥",
       sttHelpSuffix: "。",
       sttBaseUrlLabel: "API 基础 URL",
       sttModelLabel: "模型",
-      sttCustomEndpointHelp:
-        "默认使用 Groq 的 OpenAI 兼容端点。任何兼容 OpenAI /audio/transcriptions 的服务都可以使用。如果其域名不是 api.groq.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
+      sttCustomEndpointHelp: "这些字段仅为兼容旧设置而保留，当前版本不会使用。",
       sttInvalidBaseUrl:
         "语音转录 API 基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
       sttPrivacyNote:
-        "当视频没有字幕时，语音转录服务会收到你在侧边栏打开该视频期间录制的音频。",
+        "当前版本不会录制或发送音频。语音转录设置仅保存在本地，不会被使用。",
       saveSettings: "保存设置",
       localRemix: "本地改造",
       customizationTitle: "想使用其他 AI 模型？",
@@ -563,9 +562,8 @@ const YTD_OPTIONS = (() => {
         setStatus(saveStatus, "addDeepseekKey");
         return;
       }
-      // Unlike the AI Provider key, an empty Speech Transcription key is a
-      // valid choice: it just means No-Caption Video keeps showing "no
-      // captions" instead of attempting Speech Transcription.
+      // Speech Transcription settings are preserved for compatibility, but
+      // the current transcript-fetching flow does not use them.
 
       try {
         await storage.set({ [settingsApi.STORAGE_KEY]: settings });
