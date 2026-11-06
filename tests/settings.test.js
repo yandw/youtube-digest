@@ -9,14 +9,12 @@ test("custom AI base URL and model are preserved", () => {
     aiApiKey: "  example-key  ",
     aiBaseUrl: "https://api.example.com/v1/",
     aiModel: "  example-model  ",
-    supadataApiKey: "  example-supadata  ",
   });
 
   assert.equal(normalized.provider, "deepseek");
   assert.equal(normalized.aiBaseUrl, "https://api.example.com/v1");
   assert.equal(normalized.aiModel, "example-model");
   assert.equal(normalized.aiApiKey, "example-key");
-  assert.equal(normalized.supadataApiKey, "example-supadata");
   assert.equal(
     settings.chatCompletionsUrl(normalized.aiBaseUrl),
     "https://api.example.com/v1/chat/completions",
@@ -46,13 +44,63 @@ test("empty or invalid AI endpoint config falls back to DeepSeek defaults", () =
   assert.equal(settings.isValidAiBaseUrl(""), false);
 });
 
+test("custom STT base URL, key, and model are preserved", () => {
+  const normalized = settings.normalize({
+    sttApiKey: "  stt-key  ",
+    sttBaseUrl: "https://api.example.com/stt/v1/",
+    sttModel: "  whisper-example  ",
+  });
+
+  assert.equal(normalized.sttBaseUrl, "https://api.example.com/stt/v1");
+  assert.equal(normalized.sttModel, "whisper-example");
+  assert.equal(normalized.sttApiKey, "stt-key");
+  assert.equal(
+    settings.sttTranscriptionsUrl(normalized.sttBaseUrl),
+    "https://api.example.com/stt/v1/audio/transcriptions",
+  );
+});
+
+test("empty or invalid STT endpoint config falls back to Groq defaults", () => {
+  const empty = settings.normalize({});
+  assert.equal(empty.sttBaseUrl, "https://api.groq.com/openai/v1");
+  assert.equal(empty.sttModel, "whisper-large-v3-turbo");
+  assert.equal(empty.sttApiKey, "");
+  assert.equal(
+    settings.sttTranscriptionsUrl(),
+    "https://api.groq.com/openai/v1/audio/transcriptions",
+  );
+
+  const invalid = settings.normalize({
+    sttBaseUrl: "not a url",
+    sttModel: "   ",
+  });
+  assert.equal(invalid.sttBaseUrl, settings.DEFAULTS.sttBaseUrl);
+  assert.equal(invalid.sttModel, settings.DEFAULTS.sttModel);
+});
+
+test("AI and STT provider fields normalize independently", () => {
+  // A broken AI config (legacy "custom") must not reset or clear the STT
+  // fields, and vice versa — the two providers are configured separately.
+  const normalized = settings.normalize({
+    provider: "custom",
+    aiApiKey: "custom-secret",
+    sttApiKey: "stt-secret",
+    sttBaseUrl: "https://api.groq.com/openai/v1",
+    sttModel: "whisper-large-v3",
+  });
+
+  assert.equal(normalized.aiApiKey, "");
+  assert.equal(normalized.aiBaseUrl, settings.DEFAULTS.aiBaseUrl);
+  assert.equal(normalized.sttApiKey, "stt-secret");
+  assert.equal(normalized.sttModel, "whisper-large-v3");
+});
+
 test("legacy custom migration clears only the AI key and is idempotent", () => {
   const legacy = {
     provider: "custom",
     aiApiKey: "custom-secret",
     aiBaseUrl: "https://api.example.com/v1",
     aiModel: "example-model",
-    supadataApiKey: " supadata-secret ",
   };
   const first = settings.migrateLegacyCustom(legacy);
 
@@ -61,7 +109,6 @@ test("legacy custom migration clears only the AI key and is idempotent", () => {
   assert.equal(first.settings.aiBaseUrl, settings.DEFAULTS.aiBaseUrl);
   assert.equal(first.settings.aiModel, settings.DEFAULTS.aiModel);
   assert.equal(first.settings.aiApiKey, "");
-  assert.equal(first.settings.supadataApiKey, "supadata-secret");
 
   const second = settings.migrateLegacyCustom(first.settings);
   assert.equal(second.migrated, false);
@@ -72,15 +119,4 @@ test("legacy custom migration clears only the AI key and is idempotent", () => {
     aiApiKey: "new-deepseek-key",
   });
   assert.equal(configuredDeepSeek.aiApiKey, "new-deepseek-key");
-});
-
-test("Supadata receives a canonical YouTube URL", () => {
-  assert.equal(
-    settings.canonicalYouTubeUrl("ydTeb_I0b94"),
-    "https://www.youtube.com/watch?v=ydTeb_I0b94",
-  );
-  assert.throws(
-    () => settings.canonicalYouTubeUrl('"><script>'),
-    /Invalid YouTube video ID/,
-  );
 });

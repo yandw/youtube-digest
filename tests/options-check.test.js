@@ -50,17 +50,3 @@ test("checkAiConnection classifies failure statuses", async () => {
   );
   assert.deepEqual(networkError, { ok: false, reason: "aiUnreachable" });
 });
-
-test("checkSupadataKey treats 401/403 as rejected and everything else as accepted", async () => {
-  const rejected = await options.checkSupadataKey(fakeFetch(401).fetchImpl, "bad-key");
-  assert.deepEqual(rejected, { ok: false, reason: "supadataKeyRejected" });
-
-  // 400 is the expected answer for the bogus probe URL once auth passes.
-  const accepted = await options.checkSupadataKey(fakeFetch(400).fetchImpl, "good-key");
-  assert.deepEqual(accepted, { ok: true });
-
-  const unreachable = await options.checkSupadataKey(async () => {
-    throw new TypeError("fetch failed");
-  }, "key");
-  assert.deepEqual(unreachable, { ok: false, reason: "supadataUnreachable" });
-});

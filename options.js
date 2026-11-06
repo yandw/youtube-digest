@@ -9,13 +9,7 @@ const YTD_OPTIONS = (() => {
       languageGroupLabel: "Interface language",
       heading: "Bring your own API keys",
       lede:
-        "Keys stay in this Chrome profile and are sent only to Supadata and DeepSeek. This open-source extension has no developer server or analytics.",
-      transcriptProvider: "Transcript provider",
-      supadataApiKeyLabel: "Supadata API key",
-      supadataHelp: "Used to fetch timestamped YouTube subtitles. ",
-      supadataLink: "Create a Supadata account and key",
-      supadataHelpSuffix:
-        ". Supadata generates the key during onboarding.",
+        "Keys stay in this Chrome profile and are sent only to DeepSeek. This open-source extension has no developer server or analytics.",
       aiProvider: "AI provider",
       providerSummaryLabel: "Supported AI provider",
       providerBadge: "Supported in this version",
@@ -32,6 +26,22 @@ const YTD_OPTIONS = (() => {
         "The API base URL is not a valid https URL (http is allowed only for localhost).",
       privacyNote:
         "When you use AI features, DeepSeek receives the video transcript and relevant video context. Review DeepSeek's terms and pricing before saving.",
+      sttProvider: "Speech Transcription provider",
+      sttProviderSummaryLabel: "Speech Transcription provider",
+      sttOptionalBadge: "Currently disabled",
+      sttApiKeyLabel: "Speech Transcription API key",
+      sttHelp:
+        "Reserved for a possible future version. Transcript fetching currently uses captions only and never records audio. ",
+      sttLink: "Create a Groq API key",
+      sttHelpSuffix: ".",
+      sttBaseUrlLabel: "API base URL",
+      sttModelLabel: "Model",
+      sttCustomEndpointHelp:
+        "These fields are preserved for compatibility but are not used in this version.",
+      sttInvalidBaseUrl:
+        "The Speech Transcription base URL is not a valid https URL (http is allowed only for localhost).",
+      sttPrivacyNote:
+        "This version does not record or send audio. Speech Transcription settings remain stored locally but are not used.",
       saveSettings: "Save settings",
       localRemix: "Local remix",
       customizationTitle: "Want to use another AI model?",
@@ -61,7 +71,7 @@ const YTD_OPTIONS = (() => {
       footer:
         'Read <a href="PRIVACY.md" target="_blank">PRIVACY.md</a> in the repository for the complete data-flow description.',
       migrationWarning:
-        "Custom provider settings were removed safely. Your Supadata key was kept, but the AI key was cleared. Enter a DeepSeek API key to continue.",
+        "Custom provider settings were removed safely. The AI key was cleared. Enter a DeepSeek API key to continue.",
       saving: "Saving…",
       verifying: "Saved. Verifying API connections…",
       savedVerified:
@@ -74,9 +84,6 @@ const YTD_OPTIONS = (() => {
       aiHttpError: ({ status }) => `the AI endpoint returned HTTP ${status}`,
       aiUnreachable:
         "the AI endpoint could not be reached (check the base URL and manifest host_permissions)",
-      supadataKeyRejected: "the Supadata API key was rejected",
-      supadataUnreachable: "Supadata could not be reached",
-      addSupadataKey: "Add a Supadata API key.",
       addDeepseekKey: "Add a DeepSeek API key.",
       saveFailed: "Could not save settings. Please try again.",
       copying: "Copying…",
@@ -97,12 +104,7 @@ const YTD_OPTIONS = (() => {
       languageGroupLabel: "界面语言",
       heading: "使用你自己的 API 密钥",
       lede:
-        "密钥仅保存在当前 Chrome 个人资料中，只会发送给 Supadata 和 DeepSeek。本开源扩展没有开发者服务器，也不使用分析服务。",
-      transcriptProvider: "字幕服务",
-      supadataApiKeyLabel: "Supadata API 密钥",
-      supadataHelp: "用于获取带时间戳的 YouTube 字幕。",
-      supadataLink: "创建 Supadata 账号并获取密钥",
-      supadataHelpSuffix: "。Supadata 会在引导流程中生成密钥。",
+        "密钥仅保存在当前 Chrome 个人资料中，只会发送给 DeepSeek。本开源扩展没有开发者服务器，也不使用分析服务。",
       aiProvider: "AI 服务",
       providerSummaryLabel: "支持的 AI 服务",
       providerBadge: "当前版本支持",
@@ -119,6 +121,21 @@ const YTD_OPTIONS = (() => {
         "API 基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
       privacyNote:
         "使用 AI 功能时，DeepSeek 会收到视频字幕及相关视频上下文。保存前请查看 DeepSeek 的服务条款和价格。",
+      sttProvider: "语音转录服务",
+      sttProviderSummaryLabel: "语音转录服务",
+      sttOptionalBadge: "当前未启用",
+      sttApiKeyLabel: "语音转录 API 密钥",
+      sttHelp:
+        "这些设置仅为可能的后续版本保留。当前版本只抓取字幕，不会录制音频。",
+      sttLink: "创建 Groq API 密钥",
+      sttHelpSuffix: "。",
+      sttBaseUrlLabel: "API 基础 URL",
+      sttModelLabel: "模型",
+      sttCustomEndpointHelp: "这些字段仅为兼容旧设置而保留，当前版本不会使用。",
+      sttInvalidBaseUrl:
+        "语音转录 API 基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
+      sttPrivacyNote:
+        "当前版本不会录制或发送音频。语音转录设置仅保存在本地，不会被使用。",
       saveSettings: "保存设置",
       localRemix: "本地改造",
       customizationTitle: "想使用其他 AI 模型？",
@@ -147,20 +164,17 @@ const YTD_OPTIONS = (() => {
       footer:
         '完整数据流说明请参阅仓库中的 <a href="PRIVACY.md" target="_blank">PRIVACY.md</a>。',
       migrationWarning:
-        "已安全移除自定义服务设置。Supadata 密钥已保留，AI 密钥已清除。请输入 DeepSeek API 密钥以继续使用。",
+        "已安全移除自定义服务设置。AI 密钥已清除。请输入 DeepSeek API 密钥以继续使用。",
       saving: "正在保存…",
       verifying: "已保存。正在校验 API 连接…",
       savedVerified:
-        "已保存，AI 与 Supadata 连接校验通过。请重新打开 YouTube Digest 以使用这些设置。",
+        "已保存，AI 连接校验通过。请重新打开 YouTube Digest 以使用这些设置。",
       verifyFailed: ({ detail }) => `已保存，但连接校验未通过：${detail}`,
       aiKeyRejected: "AI API 密钥被拒绝",
       aiNotFound: "找不到 AI 端点或模型（请检查基础 URL 和模型名称）",
       aiHttpError: ({ status }) => `AI 端点返回 HTTP ${status}`,
       aiUnreachable:
         "无法连接 AI 端点（请检查基础 URL 和 manifest 的 host_permissions）",
-      supadataKeyRejected: "Supadata API 密钥被拒绝",
-      supadataUnreachable: "无法连接 Supadata",
-      addSupadataKey: "请添加 Supadata API 密钥。",
       addDeepseekKey: "请添加 DeepSeek API 密钥。",
       saveFailed: "无法保存设置，请重试。",
       copying: "正在复制…",
@@ -400,29 +414,6 @@ const YTD_OPTIONS = (() => {
     }
   }
 
-  /**
-   * Key check without spending a transcript credit: the transcript endpoint
-   * answers 401/403 for a bad key and anything else once auth passes.
-   */
-  async function checkSupadataKey(fetchImpl, apiKey) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
-    try {
-      const response = await fetchImpl(
-        "https://api.supadata.ai/v1/transcript?url=not-a-video&text=false&mode=native",
-        { headers: { "x-api-key": apiKey }, signal: controller.signal },
-      );
-      if (response.status === 401 || response.status === 403) {
-        return { ok: false, reason: "supadataKeyRejected" };
-      }
-      return { ok: true };
-    } catch (_error) {
-      return { ok: false, reason: "supadataUnreachable" };
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
   function getSafeLocalStorage(root) {
     try {
       return root.localStorage;
@@ -444,7 +435,9 @@ const YTD_OPTIONS = (() => {
     const aiApiKeyInput = doc.getElementById("aiApiKey");
     const aiBaseUrlInput = doc.getElementById("aiBaseUrl");
     const aiModelInput = doc.getElementById("aiModel");
-    const supadataApiKeyInput = doc.getElementById("supadataApiKey");
+    const sttApiKeyInput = doc.getElementById("sttApiKey");
+    const sttBaseUrlInput = doc.getElementById("sttBaseUrl");
+    const sttModelInput = doc.getElementById("sttModel");
     const customizationPrompt = doc.getElementById("customizationPrompt");
     const copyCustomizationPromptBtn = doc.getElementById(
       "copyCustomizationPromptBtn",
@@ -518,7 +511,9 @@ const YTD_OPTIONS = (() => {
         aiApiKeyInput.value = settings.aiApiKey;
         aiBaseUrlInput.value = settings.aiBaseUrl;
         aiModelInput.value = settings.aiModel;
-        supadataApiKeyInput.value = settings.supadataApiKey;
+        sttApiKeyInput.value = settings.sttApiKey;
+        sttBaseUrlInput.value = settings.sttBaseUrl;
+        sttModelInput.value = settings.sttModel;
         if (migration.migrated) {
           await storage.set({ [settingsApi.STORAGE_KEY]: settings });
           setStatus(saveStatus, "migrationWarning");
@@ -548,21 +543,27 @@ const YTD_OPTIONS = (() => {
         return;
       }
 
+      const sttBaseUrlValue = sttBaseUrlInput.value.trim();
+      if (sttBaseUrlValue && !settingsApi.isValidBaseUrl(sttBaseUrlValue)) {
+        setStatus(saveStatus, "sttInvalidBaseUrl");
+        return;
+      }
+
       const settings = settingsApi.normalize({
         aiApiKey: aiApiKeyInput.value,
         aiBaseUrl: baseUrlValue,
         aiModel: aiModelInput.value,
-        supadataApiKey: supadataApiKeyInput.value,
+        sttApiKey: sttApiKeyInput.value,
+        sttBaseUrl: sttBaseUrlValue,
+        sttModel: sttModelInput.value,
       });
 
-      if (!settings.supadataApiKey) {
-        setStatus(saveStatus, "addSupadataKey");
-        return;
-      }
       if (!settings.aiApiKey) {
         setStatus(saveStatus, "addDeepseekKey");
         return;
       }
+      // Speech Transcription settings are preserved for compatibility, but
+      // the current transcript-fetching flow does not use them.
 
       try {
         await storage.set({ [settingsApi.STORAGE_KEY]: settings });
@@ -571,29 +572,21 @@ const YTD_OPTIONS = (() => {
         return;
       }
 
-      // Settings are already persisted; now verify both APIs actually work.
+      // Settings are already persisted; now verify the AI API works.
       saveStatus.classList.remove("error");
       setStatus(saveStatus, "verifying");
-      const [aiResult, supadataResult] = await Promise.all([
-        checkAiConnection(root.fetch.bind(root), {
-          baseUrl: settings.aiBaseUrl,
-          apiKey: settings.aiApiKey,
-          model: settings.aiModel,
-        }),
-        checkSupadataKey(root.fetch.bind(root), settings.supadataApiKey),
-      ]);
+      const aiResult = await checkAiConnection(root.fetch.bind(root), {
+        baseUrl: settings.aiBaseUrl,
+        apiKey: settings.aiApiKey,
+        model: settings.aiModel,
+      });
 
-      const failures = [aiResult, supadataResult]
-        .filter((result) => !result.ok)
-        .map((result) =>
-          translate(currentLanguage, result.reason, {
-            status: result.status,
-          }),
-        );
-      if (failures.length) {
+      if (!aiResult.ok) {
         saveStatus.classList.add("error");
         setStatus(saveStatus, "verifyFailed", {
-          detail: failures.join("; "),
+          detail: translate(currentLanguage, aiResult.reason, {
+            status: aiResult.status,
+          }),
         });
       } else {
         setStatus(saveStatus, "savedVerified");
@@ -666,7 +659,6 @@ const YTD_OPTIONS = (() => {
     COPY,
     LANGUAGE_STORAGE_KEY,
     checkAiConnection,
-    checkSupadataKey,
     copyPromptValue,
     createPromptDrafts,
     createStorageAdapter,

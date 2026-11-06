@@ -3,7 +3,7 @@
  *
  * This is the "brain" of the extension. It runs in the background and handles:
  * 1. Opening the side panel when the user clicks the extension icon
- * 2. Fetching YouTube transcripts via Supadata API
+ * 2. Fetching YouTube transcripts from caption tracks via page injection
  * 3. Calling DeepSeek to analyze the transcript
  * 4. Sending results back to the side panel
  *
@@ -13,12 +13,15 @@
 
 // Import safe defaults and validation helpers. Secret keys live in
 // chrome.storage.local and are never part of the extension source.
-importScripts("settings.js");
+importScripts("settings.js", "captions.js", "speech-transcription.js");
 
 const DEBUG = false;
 const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
 const AI_PROVIDER_HARD_TIMEOUT_MS = 120_000;
 const AI_PROVIDER_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const STT_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
+const STT_PROVIDER_HARD_TIMEOUT_MS = 120_000;
+const STT_CHUNK_DURATION_SECONDS = 10 * 60;
 const debugLog = (...args) => {
   if (DEBUG) console.log(...args);
 };
@@ -343,6 +346,31 @@ chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
 // MESSAGE HANDLING
 // ============================================================
 
+// Each side panel (one per browser window) opens this port for as long as
+// it's showing a given video, solely so background.js can detect that
+// specific panel closing (chrome.runtime.sendMessage has no "the receiver
+// is gone" signal; a port's onDisconnect does). Nothing else is sent over
+// it. Needed to stop a Speech Transcription recording when the user closes
+// the panel mid-video — without this, the MAIN-world recorder and chunk
+// uploads would run unattended until the video itself ends.
+//
+// Keyed by windowId rather than a single shared variable: a side panel is
+// scoped to one browser window, and a user can have the panel open in more
+// than one window at once, each transcribing a different video. A single
+// shared port would let the second window's connect silently steal the
+// first window's stop signal.
+const sidePanelPortsByWindow = new Map();
+chrome.runtime.onConnect.addListener((port) => {
+  if (!port.name.startsWith("sidePanelLifecycle:")) return;
+  const windowId = Number(port.name.slice("sidePanelLifecycle:".length));
+  sidePanelPortsByWindow.set(windowId, port);
+  port.onDisconnect.addListener(() => {
+    if (sidePanelPortsByWindow.get(windowId) === port) {
+      sidePanelPortsByWindow.delete(windowId);
+    }
+  });
+});
+
 /**
  * Listen for messages from the side panel and content script.
  * This is like a switchboard — different "actions" trigger different handlers.
@@ -437,7 +465,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     getSettings()
       .then((settings) =>
         sendResponse({
-          hasSupadataKey: !!settings.supadataApiKey,
           hasAiKey: !!settings.aiApiKey,
         }),
       )
@@ -623,150 +650,234 @@ async function getPlayerVideoDetails(tabId) {
   }
 }
 
+/**
+ * Chrome does not inject manifest content scripts into tabs that were already
+ * open when the extension was reloaded. Reconcile an existing script, or
+ * inject content.js once when that isolated world has no copy yet.
+ */
+async function ensureYouTubeContentScript(tabId) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "ISOLATED",
+    func: () => {
+      if (typeof injectDigestButton !== "function") return { loaded: false };
+      injectDigestButton();
+      return { loaded: true };
+    },
+  });
+  if (results?.[0]?.result?.loaded) return;
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content.js"],
+  });
+}
+
 // ============================================================
-// TRANSCRIPT FETCHING VIA SUPADATA API
+// TRANSCRIPT FETCHING FROM YOUTUBE CAPTIONS
 // ============================================================
 
+// Runs in the YouTube MAIN world. The player adds a PO Token and client
+// parameters only when it issues its own timedtext request. Capture that
+// request, then restore both the patched network functions and the user's
+// original caption-switch state.
+async function capturePlayerCaptionRequest(expectedVideoId, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const button = document.querySelector(".ytp-subtitles-button");
+    if (!button) {
+      resolve(null);
+      return;
+    }
+
+    const captionsInitiallyOn =
+      button.getAttribute("aria-pressed") === "true";
+    const originalFetch = window.fetch;
+    const originalOpen = XMLHttpRequest.prototype.open;
+    let settled = false;
+    let timeoutId = null;
+    let reenableId = null;
+
+    function restore() {
+      window.fetch = originalFetch;
+      XMLHttpRequest.prototype.open = originalOpen;
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      if (reenableId !== null) clearTimeout(reenableId);
+    }
+
+    function finish(url) {
+      if (settled) return;
+      settled = true;
+      restore();
+      if (
+        !captionsInitiallyOn &&
+        button.getAttribute("aria-pressed") === "true"
+      ) {
+        button.click();
+      }
+      resolve(url);
+    }
+
+    function capture(input) {
+      try {
+        const raw =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input?.url;
+        const url = new URL(raw, window.location.origin);
+        if (
+          url.pathname === "/api/timedtext" &&
+          url.searchParams.get("v") === expectedVideoId &&
+          url.searchParams.get("pot")
+        ) {
+          finish(url.toString());
+        }
+      } catch (_e) {
+        // Ignore unrelated or malformed requests.
+      }
+    }
+
+    window.fetch = function (input, ...args) {
+      capture(input);
+      return originalFetch.call(this, input, ...args);
+    };
+    XMLHttpRequest.prototype.open = function (method, url, ...args) {
+      capture(url);
+      return originalOpen.call(this, method, url, ...args);
+    };
+
+    timeoutId = setTimeout(() => finish(null), timeoutMs);
+    if (captionsInitiallyOn) {
+      // Force one fresh request, ending with captions on again.
+      button.click();
+      reenableId = setTimeout(() => button.click(), 100);
+    } else {
+      button.click();
+    }
+  });
+}
+
 /**
- * Fetches the transcript for a YouTube video using Supadata API.
+ * Fetches the transcript for a YouTube video by reading Caption Tracks
+ * directly from the watch page and requesting timedtext data.
  *
- * Supadata is a specialized service that reliably extracts transcripts
- * from YouTube videos. It handles all the complexity of parsing YouTube's
- * internal data structures, dealing with different caption formats, etc.
+ * Supadata-free: no third-party API, no extra key, works for both native
+ * and auto-generated captions. Trade-off: depends on YouTube's non-public
+ * page structure and timedtext endpoint.
  *
- * API Docs: https://docs.supadata.ai
+ * Caption candidates are limited to Simplified Chinese, Traditional Chinese,
+ * automatically translated Chinese, English, and automatically translated
+ * English, in that order. Empty or failed responses fall through to the next
+ * candidate. If none produce a transcript, returns NO_SUITABLE_CAPTION.
  *
- * @param {string} videoId - The YouTube video ID (e.g., "dQw4w9WgXcQ")
- * @returns {Object} - { success, transcript, transcriptText, language } or { success: false, error }
+ * @param {string} videoId - The 11-character YouTube video ID
+ * @returns {Promise<Object>} { success, transcript, transcriptText, transcriptTextTimestamped, language, captionKind, error, message }
  */
 async function handleFetchTranscript(videoId) {
   try {
-    const settings = await getSettings();
-    if (!settings.supadataApiKey) {
+    // 1. Inject MAIN-world script to read caption tracks and translation targets.
+    // Find the tab playing this exact video; the active tab may be another one.
+    const watchTabs = await chrome.tabs.query({
+      url: "https://www.youtube.com/watch*",
+    });
+    const tab = watchTabs.find((t) => {
+      try {
+        return new URL(t.url).searchParams.get("v") === videoId;
+      } catch (_e) {
+        return false;
+      }
+    });
+    if (!tab?.id) {
       return {
         success: false,
-        error: "NO_SUPADATA_KEY",
-        message: "Supadata API key not configured. Open YouTube Digest Settings.",
+        error: "NO_TAB",
+        message: "请先在 YouTube 标签页打开这个视频。",
       };
     }
 
-    // Share only the canonical watch URL. This strips playlist, referral,
-    // timestamp, and other browsing parameters from the active tab URL.
-    const canonicalVideoUrl = YTD_SETTINGS.canonicalYouTubeUrl(videoId);
-    // Using the universal transcript endpoint with text=false to get timestamped chunks
-    const apiUrl = new URL("https://api.supadata.ai/v1/transcript");
-    apiUrl.searchParams.set("url", canonicalVideoUrl);
-    apiUrl.searchParams.set("text", "false"); // Get timestamped chunks, not plain text
-    apiUrl.searchParams.set("lang", "en"); // Prefer English
-    // Caption-only product scope: never fall back to paid AI transcription.
-    apiUrl.searchParams.set("mode", "native");
+    try {
+      await ensureYouTubeContentScript(tab.id);
+    } catch (error) {
+      // Transcript extraction uses the MAIN world and may still be available.
+      console.warn("[YouTube Digest BG] Content script recovery failed:", error.message);
+    }
 
-    // Make the API request
-    const response = await fetch(apiUrl.toString(), {
-      method: "GET",
-      headers: {
-        "x-api-key": settings.supadataApiKey,
+    const injectionResults = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      func: (expectedVideoId) => {
+        try {
+          // getPlayerResponse() follows SPA navigation; ytInitialPlayerResponse does not.
+          const player = document.getElementById("movie_player");
+          const response = player?.getPlayerResponse?.();
+          if (response?.videoDetails?.videoId !== expectedVideoId) return null;
+          const renderer =
+            response.captions?.playerCaptionsTracklistRenderer;
+          return {
+            tracks: Array.isArray(renderer?.captionTracks)
+              ? renderer.captionTracks
+              : [],
+            translationLanguages: Array.isArray(renderer?.translationLanguages)
+              ? renderer.translationLanguages
+              : [],
+          };
+        } catch (e) {
+          return null;
+        }
       },
+      args: [videoId],
     });
 
-    // Handle async jobs (for videos > 20 minutes, Supadata returns a job ID)
-    if (response.status === 202) {
-      const jobData = await response.json();
-      // Poll for the result
-      return await pollTranscriptJob(jobData.jobId, settings.supadataApiKey);
-    }
-
-    if (response.status === 206) {
+    const captionData = injectionResults?.[0]?.result;
+    if (!captionData) {
       return {
         success: false,
-        error: "NO_TRANSCRIPT",
-        message: "No native subtitle track is available for this video.",
+        error: "PLAYER_NOT_READY",
+        message: "播放器还没加载完成,请稍后重试。",
       };
     }
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      if (response.status === 401) {
-        return {
-          success: false,
-          error: "INVALID_SUPADATA_KEY",
-          message: "Your Supadata API key is invalid. Open YouTube Digest Settings.",
-        };
-      }
-      if (response.status === 404) {
-        return {
-          success: false,
-          error: "NO_TRANSCRIPT",
-          message: "No subtitles found for this video.",
-        };
-      }
-      if (response.status === 429) {
-        return {
-          success: false,
-          error: "RATE_LIMITED",
-          message:
-            "Supadata rate limit reached. Please wait a minute and try again.",
-        };
-      }
-      throw new Error(
-        errorData.message || `Supadata API error: ${response.status}`,
-      );
+    // 2. Try the public track URLs first. YouTube may return an empty body
+    // when the request lacks the player-issued PO Token.
+    const directResult = await YTD_CAPTIONS.fetchCaptionTranscript(
+      captionData.tracks,
+      captionData.translationLanguages,
+      fetch,
+    );
+    if (directResult.success) return directResult;
+    if (
+      YTD_CAPTIONS.selectCaptionCandidates(
+        captionData.tracks,
+        captionData.translationLanguages,
+      ).length === 0
+    ) {
+      return directResult;
     }
 
-    const data = await response.json();
-
-    // Parse the response into our internal format
-    // Supadata returns: { content: [{ text, offset, duration, lang }], lang, availableLangs }
-    const transcript = [];
-    let transcriptTextPlain = ""; // Plain text for display/export
-    let transcriptTextTimestamped = ""; // Timestamped text for AI analysis
-
-    if (data.content && Array.isArray(data.content)) {
-      for (const chunk of data.content) {
-        if (chunk.text) {
-          // Clean up caption artifacts:
-          // ">>" = speaker change marker from YouTube auto-captions
-          const cleanText = chunk.text.replace(/>> ?/g, "").trim();
-          if (!cleanText) continue; // Skip if nothing left after cleanup
-
-          // offset is in milliseconds, convert to seconds
-          const startSeconds = Math.floor((chunk.offset || 0) / 1000);
-          const minutes = Math.floor(startSeconds / 60);
-          const seconds = startSeconds % 60;
-          const timestamp = `${minutes}:${String(seconds).padStart(2, "0")}`;
-
-          transcript.push({
-            text: cleanText,
-            start: startSeconds,
-            duration: Math.floor((chunk.duration || 0) / 1000),
-            language: chunk.lang || data.lang || null,
-          });
-
-          // Plain text without timestamps (for display/export)
-          transcriptTextPlain += cleanText + " ";
-
-          // Timestamped text for DeepSeek (format: [MM:SS] text)
-          // This allows the model to reference actual transcript positions.
-          transcriptTextTimestamped += `[${timestamp}] ${cleanText}\n`;
-        }
-      }
+    // 3. Retry with the authorization parameters from the player's own
+    // caption request. The MAIN-world helper restores the caption switch.
+    let playerRequestUrl = null;
+    try {
+      const authorizedResults = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "MAIN",
+        func: capturePlayerCaptionRequest,
+        args: [videoId, 8000],
+      });
+      playerRequestUrl = authorizedResults?.[0]?.result || null;
+    } catch (_e) {
+      // Keep the readable direct-fetch failure if capture is unavailable.
     }
+    if (!playerRequestUrl) return directResult;
 
-    if (transcript.length === 0) {
-      return {
-        success: false,
-        error: "EMPTY_TRANSCRIPT",
-        message: "Supadata returned an empty transcript for this video.",
-      };
-    }
-
-    return {
-      success: true,
-      transcript: transcript,
-      transcriptText: transcriptTextPlain.trim(), // For display
-      transcriptTextTimestamped: transcriptTextTimestamped.trim(), // For AI
-      language: typeof data.lang === "string" ? data.lang : null,
-    };
+    return await YTD_CAPTIONS.fetchCaptionTranscript(
+      captionData.tracks,
+      captionData.translationLanguages,
+      fetch,
+      (url) =>
+        YTD_CAPTIONS.withPlayerCaptionAuthorization(url, playerRequestUrl),
+    );
   } catch (error) {
     console.error("Transcript fetch error:", error);
     return {
@@ -776,81 +887,498 @@ async function handleFetchTranscript(videoId) {
   }
 }
 
+// ============================================================
+// SPEECH TRANSCRIPTION (currently dormant)
+// ============================================================
+//
+// Caption fetching no longer calls this subsystem. The implementation and
+// stored settings are retained on this feature branch, but no transcript
+// request starts recording or uploads audio.
+
+// One entry per videoId currently being recorded, so a second request for
+// the same video (or a stray chunk after the panel closed) can be ignored
+// instead of starting a duplicate recorder.
+const activeSpeechTranscriptions = new Map();
+
 /**
- * Polls for transcript job completion (for long videos).
- * Supadata processes videos > 20 minutes asynchronously.
- *
- * @param {string} jobId - The job ID returned by the initial request
- * @returns {Object} - Same format as handleFetchTranscript
+ * Finds the YouTube tab currently playing `videoId`. Shared with
+ * handleFetchTranscript's own lookup; kept as a separate small helper here
+ * so handleSpeechTranscribe doesn't need to reach into that function.
  */
-async function pollTranscriptJob(jobId, supadataApiKey) {
-  const maxAttempts = 60; // Max 60 seconds of polling
-  const pollInterval = 1000; // Poll every 1 second
+async function findWatchTab(videoId) {
+  const watchTabs = await chrome.tabs.query({
+    url: "https://www.youtube.com/watch*",
+  });
+  return watchTabs.find((t) => {
+    try {
+      return new URL(t.url).searchParams.get("v") === videoId;
+    } catch (_e) {
+      return false;
+    }
+  });
+}
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    // Wait before polling
-    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+/**
+ * Injected into the YouTube tab's MAIN world (the only place with a real
+ * reference to the <video> element). Records the currently playing audio
+ * in fixed-length chunks via MediaRecorder, and posts each finished chunk
+ * back to the page as a window.postMessage — content.js (isolated world)
+ * picks it up and relays it to background.js over chrome.runtime.sendMessage,
+ * since MAIN-world code cannot call that API directly.
+ *
+ * This can't use chrome.scripting.executeScript's normal return-value
+ * pattern (see getPlayerVideoDetails / handleFetchTranscript above):
+ * that pattern captures one return value when the injected function ends,
+ * but this recorder needs to keep running and emit a chunk every
+ * chunkDurationSeconds while playback continues.
+ */
+function injectSpeechTranscriptionRecorder(videoId, chunkDurationSeconds) {
+  const SOURCE = "ytd-speech-transcription";
 
-    const response = await fetch(
-      `https://api.supadata.ai/v1/transcript/${encodeURIComponent(jobId)}`,
-      {
-        headers: { "x-api-key": supadataApiKey },
-      },
+  // "*" as the postMessage targetOrigin would let any other script on this
+  // page (YouTube's own, or another extension's) receive and forge these
+  // messages; window.location.origin is always https://www.youtube.com
+  // here, so there's no reason to broadcast wider than that.
+  const targetOrigin = window.location.origin;
+
+  const video = document.querySelector("video.html5-main-video");
+  if (!video || typeof video.captureStream !== "function") {
+    window.postMessage(
+      { source: SOURCE, videoId, isFinal: true, error: "NO_VIDEO_ELEMENT" },
+      targetOrigin,
     );
-
-    if (!response.ok) {
-      throw new Error(`Job polling failed: ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    if (data.status === "completed") {
-      // Parse the completed transcript
-      const transcript = [];
-      let transcriptTextPlain = "";
-      let transcriptTextTimestamped = "";
-
-      if (data.content && Array.isArray(data.content)) {
-        for (const chunk of data.content) {
-          if (chunk.text) {
-            // Clean up caption artifacts (">>" = speaker change marker)
-            const cleanText = chunk.text.replace(/>> ?/g, "").trim();
-            if (!cleanText) continue;
-
-            const startSeconds = Math.floor((chunk.offset || 0) / 1000);
-            const minutes = Math.floor(startSeconds / 60);
-            const seconds = startSeconds % 60;
-            const timestamp = `${minutes}:${String(seconds).padStart(2, "0")}`;
-
-            transcript.push({
-              text: cleanText,
-              start: startSeconds,
-              duration: Math.floor((chunk.duration || 0) / 1000),
-              language: chunk.lang || data.lang || null,
-            });
-            transcriptTextPlain += cleanText + " ";
-            transcriptTextTimestamped += `[${timestamp}] ${chunk.text}\n`;
-          }
-        }
-      }
-
-      return {
-        success: true,
-        transcript: transcript,
-        transcriptText: transcriptTextPlain.trim(),
-        transcriptTextTimestamped: transcriptTextTimestamped.trim(),
-        language: typeof data.lang === "string" ? data.lang : null,
-      };
-    }
-
-    if (data.status === "failed") {
-      throw new Error("Transcript processing failed");
-    }
-
-    // Status is 'queued' or 'active' — keep polling
+    return;
   }
 
-  throw new Error("Transcript processing timed out");
+  const stream = video.captureStream();
+  if (stream.getAudioTracks().length === 0) {
+    window.postMessage(
+      { source: SOURCE, videoId, isFinal: true, error: "NO_AUDIO_TRACK" },
+      targetOrigin,
+    );
+    return;
+  }
+
+  const audioOnlyStream = new MediaStream(stream.getAudioTracks());
+  const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+    ? "audio/webm;codecs=opus"
+    : "audio/webm";
+
+  let chunkIndex = 0;
+  // The offset is anchored to the video's own clock, not wall time, so a
+  // paused video doesn't drift the chunk boundaries away from where its
+  // audio actually is.
+  let chunkStartVideoTime = video.currentTime;
+  let stopped = false;
+  let recorder = null;
+  let chunkTimer = null;
+
+  function startChunk() {
+    if (stopped) return;
+    const chunkBuffer = [];
+    recorder = new MediaRecorder(audioOnlyStream, { mimeType });
+    const chunkStart = chunkStartVideoTime;
+
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunkBuffer.push(e.data);
+    };
+
+    recorder.onstop = async () => {
+      const blob = new Blob(chunkBuffer, { type: mimeType });
+      const arrayBuffer = await blob.arrayBuffer();
+      const durationSeconds = Math.max(0, video.currentTime - chunkStart);
+
+      window.postMessage(
+        {
+          source: SOURCE,
+          videoId,
+          chunkIndex: chunkIndex++,
+          offsetSeconds: chunkStart,
+          durationSeconds,
+          isFinal: stopped,
+          audioBytes: arrayBuffer,
+          mimeType,
+        },
+        targetOrigin,
+      );
+
+      if (!stopped) {
+        chunkStartVideoTime = video.currentTime;
+        startChunk();
+      }
+    };
+
+    recorder.start();
+    chunkTimer = setTimeout(() => {
+      if (recorder && recorder.state !== "inactive") recorder.stop();
+    }, chunkDurationSeconds * 1000);
+  }
+
+  function stopRecording() {
+    if (stopped) return;
+    stopped = true;
+    clearTimeout(chunkTimer);
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    } else {
+      // No in-flight chunk to flush; tell content.js we're done so it can
+      // stop waiting for a final postMessage that will never arrive.
+      window.postMessage({ source: SOURCE, videoId, isFinal: true, audioBytes: null }, targetOrigin);
+    }
+    video.removeEventListener("ended", stopRecording);
+    window.removeEventListener("message", onStopCommand);
+  }
+
+  function onStopCommand(event) {
+    if (event.source !== window) return;
+    if (event.origin !== targetOrigin) return;
+    const data = event.data;
+    if (!data || data.source !== SOURCE) return;
+    if (data.command === "stop" && data.videoId === videoId) stopRecording();
+    // Sent on every SPA navigation (content.js's yt-navigate-finish
+    // handler), with no videoId: YouTube swaps the page's <video> content
+    // without reloading, so a recorder tied to the video we're leaving
+    // would otherwise keep running since its "ended" listener never fires
+    // for a video that's simply been navigated away from, not ended.
+    if (data.command === "stopAll") stopRecording();
+  }
+
+  video.addEventListener("ended", stopRecording);
+  window.addEventListener("message", onStopCommand);
+  startChunk();
+}
+
+/**
+ * Builds the multipart/form-data body for one chunk's request to the
+ * Speech Transcription Provider's /audio/transcriptions endpoint, and
+ * posts it with the same idle+hard dual-timer pattern requestAiCompletion
+ * uses for the AI Provider (see above) — a per-chunk idle timer that resets
+ * on response progress, plus a hard ceiling that doesn't reset.
+ */
+async function requestSttTranscription(audioBlob, mimeType, settings) {
+  const formData = new FormData();
+  const extension = mimeType.includes("webm") ? "webm" : "bin";
+  formData.append("file", audioBlob, `chunk.${extension}`);
+  formData.append("model", settings.sttModel);
+  formData.append("response_format", "verbose_json");
+  // No `language` field: Speech Transcription always lets the model
+  // auto-detect, independent of the user's Display Mode (see GLOSSARY.md).
+
+  const controller = new AbortController();
+  let timeoutKind = "";
+  let idleTimeoutId;
+  let hardTimeoutId;
+  const abortForTimeout = (kind) => {
+    if (controller.signal.aborted) return;
+    timeoutKind = kind;
+    controller.abort();
+  };
+  const resetIdleTimeout = () => {
+    clearTimeout(idleTimeoutId);
+    idleTimeoutId = setTimeout(
+      () => abortForTimeout("idle"),
+      STT_PROVIDER_IDLE_TIMEOUT_MS,
+    );
+  };
+
+  hardTimeoutId = setTimeout(
+    () => abortForTimeout("hard"),
+    STT_PROVIDER_HARD_TIMEOUT_MS,
+  );
+  resetIdleTimeout();
+  try {
+    const response = await fetch(YTD_SETTINGS.sttTranscriptionsUrl(settings.sttBaseUrl), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${settings.sttApiKey}` },
+      body: formData,
+      signal: controller.signal,
+    });
+    resetIdleTimeout();
+
+    const data = await response.json();
+    resetIdleTimeout();
+
+    if (!response.ok) {
+      const error = new Error(
+        data?.error?.message || `Speech Transcription Provider error: ${response.status}`,
+      );
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  } catch (error) {
+    if (timeoutKind === "idle") {
+      const timeoutError = new Error(
+        "Speech Transcription request was inactive for 50 seconds.",
+      );
+      timeoutError.code = "STT_TIMEOUT";
+      throw timeoutError;
+    }
+    if (timeoutKind === "hard") {
+      const timeoutError = new Error(
+        "Speech Transcription request exceeded the 120-second limit.",
+      );
+      timeoutError.code = "STT_TIMEOUT";
+      throw timeoutError;
+    }
+    if (!error.code) error.code = "STT_REQUEST_ERROR";
+    throw error;
+  } finally {
+    clearTimeout(idleTimeoutId);
+    clearTimeout(hardTimeoutId);
+  }
+}
+
+const STT_MAX_AUTO_ATTEMPTS = 3;
+const STT_RETRY_BASE_DELAY_MS = 2000;
+
+/**
+ * Decides whether a chunk request deserves an automatic retry, mirroring
+ * sidepanel.js's isRetryableTranslationError: auth/config errors never
+ * recover on their own, rate limits and timeouts usually do.
+ */
+function isRetryableSttError(error) {
+  if (error?.status === 401 || error?.status === 403) return false;
+  if (error?.code === "STT_TIMEOUT") return true;
+  if (error?.status === 429) return true;
+  if (typeof error?.status === "number" && error.status >= 500) return true;
+  return /timed? out|inactive|exceeded|network|failed to fetch/i.test(
+    String(error?.message || ""),
+  );
+}
+
+function sttRetryDelay(attempt) {
+  return new Promise((resolve) =>
+    setTimeout(resolve, STT_RETRY_BASE_DELAY_MS * attempt),
+  );
+}
+
+/**
+ * Retries a chunk's Speech Transcription request up to STT_MAX_AUTO_ATTEMPTS
+ * times with linear backoff, same shape as sidepanel.js's
+ * sendTranslationWithRetry. A single dropped chunk on a multi-chunk video
+ * would otherwise permanently show as a transcript gap for what's often a
+ * transient rate limit or timeout, one retry away from succeeding.
+ */
+async function requestSttTranscriptionWithRetry(audioBlob, mimeType, settings) {
+  let lastError;
+  for (let attempt = 1; attempt <= STT_MAX_AUTO_ATTEMPTS; attempt += 1) {
+    try {
+      return await requestSttTranscription(audioBlob, mimeType, settings);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableSttError(error)) throw error;
+    }
+    if (attempt < STT_MAX_AUTO_ATTEMPTS) await sttRetryDelay(attempt);
+  }
+  throw lastError;
+}
+
+/**
+ * Pushes a transcriptProgress update to the open side panel. Fire-and-forget:
+ * sendMessage throws if the panel isn't listening (closed, or never opened),
+ * which is expected and not an error worth surfacing.
+ *
+ * secondsTranscribed is omitted (not zero) for progress updates that aren't
+ * Speech Transcription (e.g. the existing "Fetching transcript" caption
+ * path), so sidepanel.js knows to keep showing the indeterminate bar
+ * instead of a 0% fill.
+ */
+function pushTranscriptProgress(title, subtitle, secondsTranscribed) {
+  chrome.runtime
+    .sendMessage({
+      action: "transcriptProgress",
+      title,
+      subtitle,
+      secondsTranscribed,
+    })
+    .catch(() => {});
+}
+
+/**
+ * Runs Speech Transcription for a No-Caption Video: injects the MAIN-world
+ * recorder, transcribes each chunk as it arrives via the Speech
+ * Transcription Provider, and resolves once recording stops (video ends,
+ * the side panel disconnects, or the tab goes away) with the same result
+ * shape handleFetchTranscript returns, so callers don't need to know which
+ * path produced the Transcript.
+ *
+ * @param {string} videoId
+ * @param {{onDisconnect?: (cb: () => void) => void}} [panel] - lets the
+ *   caller register a stop signal (the side panel's port disconnecting)
+ * @returns {Promise<Object>}
+ */
+async function handleSpeechTranscribe(videoId, panel = {}) {
+  const settings = await getSettings();
+  if (!settings.sttApiKey) {
+    return {
+      success: false,
+      error: "STT_NO_KEY",
+      message: "本视频没有字幕。",
+    };
+  }
+
+  const tab = await findWatchTab(videoId);
+  if (!tab?.id) {
+    return {
+      success: false,
+      error: "NO_TAB",
+      message: "请先在 YouTube 标签页打开这个视频。",
+    };
+  }
+
+  // A second call for a videoId that's still recording (e.g. the user
+  // double-clicks Digest, or closes and reopens the panel quickly before
+  // the first attempt's stop() has actually silenced the MAIN-world
+  // recorder) must not inject a second MediaRecorder on top of the first:
+  // captureStream() then records duplicate chunks, and two onChunkMessage
+  // listeners race to write into two different chunkRecordLists closures.
+  // Join the in-flight attempt's own result instead of starting a new one.
+  if (activeSpeechTranscriptions.has(videoId)) {
+    return activeSpeechTranscriptions.get(videoId).resultPromise;
+  }
+
+  const chunkRecordLists = [];
+  let settled = false;
+  let recorderError = null;
+  let resolveResult;
+  const resultPromise = new Promise((resolve) => {
+    resolveResult = resolve;
+  });
+
+  const stop = () => {
+    chrome.tabs
+      .sendMessage(tab.id, { action: "stopSpeechTranscriptionRecording", videoId })
+      .catch(() => {});
+  };
+  activeSpeechTranscriptions.set(videoId, { stop, resultPromise });
+
+  function finish() {
+    if (settled) return;
+    settled = true;
+    activeSpeechTranscriptions.delete(videoId);
+
+    if (YTD_SPEECH_TRANSCRIPTION.allChunksFailed(chunkRecordLists)) {
+      // The recorder failing to even start (no <video>, no audio track) is a
+      // different, more specific situation than every chunk's upload
+      // failing — keep that distinction visible instead of collapsing both
+      // into the same generic "did not produce anything" message.
+      if (recorderError === "NO_AUDIO_TRACK") {
+        resolveResult({
+          success: false,
+          error: "STT_NO_AUDIO_TRACK",
+          message: "本视频没有字幕,且视频没有可转录的音轨。",
+        });
+        return;
+      }
+      if (recorderError === "NO_VIDEO_ELEMENT") {
+        resolveResult({
+          success: false,
+          error: "PLAYER_NOT_READY",
+          message: "播放器还没加载完成,请稍后重试。",
+        });
+        return;
+      }
+      resolveResult({
+        success: false,
+        error: "STT_REQUEST_ERROR",
+        message: "本视频没有字幕。语音转录未能生成任何内容。",
+      });
+      return;
+    }
+
+    const stitched = YTD_SPEECH_TRANSCRIPTION.stitchChunks(chunkRecordLists);
+    resolveResult({
+      success: true,
+      transcript: stitched.transcript,
+      transcriptText: stitched.transcriptTextPlain,
+      transcriptTextTimestamped: stitched.transcriptTextTimestamped,
+      language: null,
+      captionKind: "speech",
+      hasFailures: stitched.hasFailures,
+    });
+  }
+
+  async function onChunkMessage(message, sender) {
+    if (message.action !== "speechTranscriptionChunk") return;
+    if (message.videoId !== videoId) return;
+    if (sender.tab?.id !== tab.id) return;
+    if (settled) return;
+
+    if (message.error) {
+      // The recorder couldn't start at all (no <video>, no audio track).
+      recorderError = message.error;
+      chunkRecordLists[0] = [
+        YTD_SPEECH_TRANSCRIPTION.failedChunkRecord(0, 0),
+      ];
+      finish();
+      return;
+    }
+
+    if (message.audioBytes) {
+      const audioBlob = new Blob([new Uint8Array(message.audioBytes)], {
+        type: message.mimeType,
+      });
+      pushTranscriptProgress(
+        "正在语音转录",
+        `已转录到 ${Math.floor(message.offsetSeconds / 60)} 分钟`,
+        message.offsetSeconds,
+      );
+      try {
+        const verboseJson = await requestSttTranscriptionWithRetry(
+          audioBlob,
+          message.mimeType,
+          settings,
+        );
+        chunkRecordLists[message.chunkIndex] =
+          YTD_SPEECH_TRANSCRIPTION.alignChunkSegments(
+            verboseJson,
+            message.offsetSeconds,
+          );
+      } catch (error) {
+        console.error("Speech Transcription chunk error:", error);
+        chunkRecordLists[message.chunkIndex] = [
+          YTD_SPEECH_TRANSCRIPTION.failedChunkRecord(
+            message.offsetSeconds,
+            message.durationSeconds,
+          ),
+        ];
+      }
+      pushTranscriptProgress(
+        "正在语音转录",
+        `已转录到 ${Math.floor((message.offsetSeconds + message.durationSeconds) / 60)} 分钟`,
+        message.offsetSeconds + message.durationSeconds,
+      );
+    }
+
+    if (message.isFinal) finish();
+  }
+
+  chrome.runtime.onMessage.addListener(onChunkMessage);
+  if (typeof panel.onDisconnect === "function") {
+    panel.onDisconnect(stop);
+  }
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      func: injectSpeechTranscriptionRecorder,
+      args: [videoId, STT_CHUNK_DURATION_SECONDS],
+    });
+  } catch (error) {
+    chrome.runtime.onMessage.removeListener(onChunkMessage);
+    activeSpeechTranscriptions.delete(videoId);
+    return {
+      success: false,
+      error: "PLAYER_NOT_READY",
+      message: "播放器还没加载完成,请稍后重试。",
+    };
+  }
+
+  const result = await resultPromise;
+  chrome.runtime.onMessage.removeListener(onChunkMessage);
+  return result;
 }
 
 // ============================================================
@@ -1178,7 +1706,7 @@ async function handleSaveNote(
     // First, try to get the transcript from the digest cache. The side panel
     // saves digests to chrome.storage.LOCAL — this used to look in
     // storage.session (the wrong store), so it missed every time and
-    // refetched the transcript from Supadata on every saved note.
+    // refetched the transcript on every saved note.
     let transcript = null;
     try {
       const cached = await chrome.storage.local.get(`digest_${videoId}`);
@@ -1724,4 +2252,8 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleTranslateContent,
   closePanelForTab,
   updatePanelForTab,
+  isRetryableSttError,
+  requestSttTranscriptionWithRetry,
+  capturePlayerCaptionRequest,
+  ensureYouTubeContentScript,
 };

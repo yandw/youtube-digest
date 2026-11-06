@@ -216,7 +216,7 @@ function splitOversizedThought(text, maxChars) {
 /**
  * Reconstructs complete sentences across raw caption boundaries. Each segment
  * keeps the timestamp of the first caption that contributed text. Character
- * and time limits prevent a malformed Supadata entry from becoming one giant
+ * and time limits prevent a malformed entry from becoming one giant
  * row while punctuation remains the preferred boundary.
  */
 function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
@@ -315,13 +315,37 @@ document.addEventListener("DOMContentLoaded", async () => {
     action: "checkConfig",
   });
 
-  if (!configStatus.hasSupadataKey || !configStatus.hasAiKey) {
+  if (!configStatus.hasAiKey) {
     showConfigError(configStatus);
     return;
   }
 
   await checkCurrentTab();
 });
+
+// Kept open only so background.js can detect the panel closing via
+// port.onDisconnect — chrome.runtime.sendMessage gives background no such
+// signal. Needed to stop a Speech Transcription recording (MediaRecorder +
+// chunk uploads running in the YouTube tab) when the user closes the panel
+// mid-video instead of letting it run unattended until the video ends.
+let sidePanelLifecyclePort = null;
+
+// The port name carries this window's ID so background.js can track one
+// port per window (a user can have the side panel open in more than one
+// browser window at once, each transcribing a different video) instead of
+// one shared port that the second window's connect would silently steal.
+// Awaits chrome.windows.getCurrent() directly rather than relying on the
+// module-level panelWindowId variable, since that's set asynchronously at
+// load and could still be null if this runs before it resolves.
+async function openSidePanelLifecyclePort() {
+  if (sidePanelLifecyclePort) return sidePanelLifecyclePort.windowId;
+  const { id: windowId } = await chrome.windows.getCurrent();
+  sidePanelLifecyclePort = Object.assign(
+    chrome.runtime.connect({ name: `sidePanelLifecycle:${windowId}` }),
+    { windowId },
+  );
+  return windowId;
+}
 
 // Listen for messages from the Digest button on YouTube page
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -334,8 +358,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ success: true });
   }
   if (message.action === "transcriptProgress") {
-    // Background is telling us the transcript fetch status changed
-    updateLoading(message.title, message.subtitle);
+    // Background is telling us the transcript fetch status changed.
+    // secondsTranscribed only accompanies Speech Transcription progress;
+    // every other caller of pushTranscriptProgress omits it, so the
+    // existing indeterminate bar still plays for those (percent undefined).
+    const percent =
+      typeof message.secondsTranscribed === "number" && currentVideoDuration > 0
+        ? (message.secondsTranscribed / currentVideoDuration) * 100
+        : undefined;
+    updateLoading(message.title, message.subtitle, percent);
     sendResponse({ success: true });
   }
   if (message.action === "noteSaved") {
@@ -716,6 +747,7 @@ async function startDigest(videoId, videoUrl) {
   }
 
   showState("loading");
+  await openSidePanelLifecyclePort();
   updateLoading("Fetching transcript", "");
 
   const transcriptResult = await chrome.runtime.sendMessage({
@@ -724,13 +756,6 @@ async function startDigest(videoId, videoUrl) {
   });
 
   if (!transcriptResult.success) {
-    if (transcriptResult.error === "NO_SUPADATA_KEY") {
-      showError(
-        "API key missing",
-        "Add your Supadata API key in YouTube Digest Settings.",
-      );
-      return;
-    }
     showError(
       "No transcript found",
       transcriptResult.message || transcriptResult.error,
@@ -1458,9 +1483,22 @@ function showState(state) {
   }
 }
 
-function updateLoading(title, subtitle) {
+function updateLoading(title, subtitle, percent) {
   document.getElementById("loadingText").textContent = title;
   document.getElementById("loadingSubtext").textContent = subtitle;
+
+  // Speech Transcription reports real progress (percent is a number);
+  // every other loading state (caption fetch, AI calls) keeps the
+  // existing indeterminate animated bar by leaving percent undefined.
+  const bar = document.getElementById("loadingBar");
+  const fill = document.getElementById("loadingBarFill");
+  if (typeof percent === "number") {
+    bar.classList.add("loading-bar--determinate");
+    fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  } else {
+    bar.classList.remove("loading-bar--determinate");
+    fill.style.width = "";
+  }
 }
 
 function showError(title, message) {
@@ -1473,8 +1511,7 @@ function showError(title, message) {
 
 function showConfigError(configStatus) {
   const missingKeys = [];
-  if (!configStatus.hasSupadataKey) missingKeys.push("Supadata");
-  if (!configStatus.hasAiKey) missingKeys.push("AI provider");
+  if (!configStatus.hasAiKey) missingKeys.push("DeepSeek");
 
   showState("error");
   document.getElementById("errorTitle").textContent = "API Keys Missing";
@@ -1998,7 +2035,7 @@ function getTranscriptContext(selectedText) {
 /**
  * Saves the current digest results to persistent local storage.
  * Results survive browser restarts — reopening the same video loads from cache
- * without consuming API tokens or Supadata calls.
+ * without consuming API tokens.
  * Cache expires after 30 days. Oldest entries evicted when > 20 videos cached.
  */
 async function saveToCache(videoId) {
